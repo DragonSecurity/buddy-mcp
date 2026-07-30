@@ -27,6 +27,8 @@ export interface BuddyState {
   version: 1;
   name: string;
   personality: PersonalityId;
+  /** Original free-text description, for rescued buddies. Empty otherwise. */
+  bio: string;
   bornAt: string;
   level: number;
   /** XP banked toward the next level, not lifetime total. */

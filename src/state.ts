@@ -29,6 +29,7 @@ export function hatch(now: Date): BuddyState {
     version: 1,
     name: pick(NAMES),
     personality: pick(PERSONALITY_IDS) as PersonalityId,
+    bio: '',
     bornAt: now.toISOString(),
     level: 1,
     xp: 0,
@@ -49,6 +50,7 @@ export function hatch(now: Date): BuddyState {
 interface BuddyRow {
   name: string;
   personality: string;
+  bio: string | null;
   born_at: number;
   level: number;
   xp: number;
@@ -94,6 +96,7 @@ function rowToState(db: DatabaseSync, row: BuddyRow): BuddyState {
     version: 1,
     name: row.name || pick(NAMES),
     personality,
+    bio: row.bio || '',
     bornAt: iso(row.born_at),
     level: Math.max(1, Math.floor(row.level)),
     xp: Math.max(0, row.xp),
@@ -149,12 +152,13 @@ export function save(state: BuddyState): void {
 
   db.prepare(
     `INSERT INTO buddy (
-       id, name, personality, born_at, level, xp, total_xp, energy,
+       id, name, personality, bio, born_at, level, xp, total_xp, energy,
        streak, longest_streak, last_seen_at, last_seen_day, last_observed_day, last_reaction
-     ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(id) DO UPDATE SET
        name = excluded.name,
        personality = excluded.personality,
+       bio = excluded.bio,
        born_at = excluded.born_at,
        level = excluded.level,
        xp = excluded.xp,
@@ -169,6 +173,7 @@ export function save(state: BuddyState): void {
   ).run(
     state.name,
     state.personality,
+    state.bio,
     bornAt,
     state.level,
     state.xp,

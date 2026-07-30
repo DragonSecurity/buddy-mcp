@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { FIORA_DB, importFromFiora } from './import.js';
+import { CLAUDE_JSON, FIORA_DB, importFromFiora, rescueOriginal } from './import.js';
 import { statePath } from './state.js';
 import { PERSONALITY_IDS } from './types.js';
 import type { PersonalityId } from './types.js';
@@ -12,16 +12,27 @@ function flag(name: string): string | undefined {
 function main(): void {
   const cmd = process.argv[2];
 
-  if (cmd !== 'import') {
+  if (cmd !== 'import' && cmd !== 'rescue') {
     process.stdout.write(
       [
         'buddy-mcp',
         '',
         'Usage:',
         '  buddy-import import [--from <path>] [--personality <id>] [--force]',
+        '  buddy-import rescue [--identity <path>] [--events <path|none>]',
+        '                      [--personality <id>] [--force]',
         '',
+        'import   Move a @fiorastudio/buddy companion in.',
         `  --from         source database (default: ${FIORA_DB})`,
-        `  --personality  one of: ${PERSONALITY_IDS.join(', ')} (default: rolled)`,
+        '',
+        "rescue   Restore the companion Anthropic's /buddy left behind, and",
+        '         optionally graft on a later buddy\'s XP history.',
+        `  --identity     original record (default: ${CLAUDE_JSON})`,
+        `  --events       history to graft on, or "none" (default: ${FIORA_DB})`,
+        '',
+        'Both:',
+        `  --personality  one of: ${PERSONALITY_IDS.join(', ')}`,
+        '                 (rescue infers it from the original bio when omitted)',
         '  --force        replace an existing buddy',
         '',
       ].join('\n'),
@@ -35,11 +46,41 @@ function main(): void {
     process.exit(1);
   }
 
+  const force = process.argv.includes('--force');
+
   try {
+    if (cmd === 'rescue') {
+      const eventsFlag = flag('events');
+      const r = rescueOriginal({
+        identityFrom: flag('identity'),
+        eventsFrom: eventsFlag === 'none' ? null : eventsFlag,
+        personality,
+        force,
+      });
+      process.stdout.write(
+        [
+          `Rescued ${r.name}.`,
+          '',
+          `  born        ${r.bornAt}`,
+          `  level       ${r.level}  (${r.totalXp} lifetime xp)`,
+          `  events      ${r.events}${r.eventsSource ? ` grafted from ${r.eventsSource}` : ''}`,
+          `  streak      ${r.longestStreak} days (reconstructed)`,
+          `  personality ${r.personality}${r.personalityInferred ? ' (inferred from the original bio)' : ''}`,
+          r.bio ? `\nOriginal description:\n  ${r.bio}` : '',
+          `\nIdentity from ${r.identitySource}`,
+          `Stored at ${statePath()}`,
+          '',
+        ]
+          .filter(Boolean)
+          .join('\n'),
+      );
+      return;
+    }
+
     const r = importFromFiora({
       source: flag('from'),
       personality,
-      force: process.argv.includes('--force'),
+      force,
     });
     process.stdout.write(
       [

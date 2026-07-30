@@ -8,15 +8,15 @@ and gets moody if you disappear for a week. Its name and personality are rolled
 once, at hatch, and kept for life.
 
 ```
-🐉 Voidkin the Dragon · cheerful
+🐉 Emberchaos the Dragon · gremlin
 Lv 13  ░░░░░░░░░░░░░░  0/1972 xp
-Mood  🤩 over the moon   ·   Energy ▓▓▓▓▓▓▓▓▓▓ 100%
-Streak 1 day (best 12) · 631 observations · 109 days old
-Skills 0/12 used
+Mood  🤩 feral with joy   ·   Energy ▓▓▓▓▓▓▓▓▓▓ 100%
+Streak 2 days (best 12) · 632 observations · 113 days old
+Skills 1/13 used · most-used dataviz (1)
 
-Recently: Imported from @fiorastudio/buddy at level 13 with 631 events
+A rotund, fidgety chonk that thrashes through your code like a wrecking ball…
 
-> Ready when you are!
+> still here. still a problem
 ```
 
 ## Install
@@ -136,9 +136,36 @@ reconstructs the longest streak from event dates, and maps upstream event types
 the *next* level restarts, since the two XP curves differ. Species does not
 carry across — stages here are fixed.
 
+## Rescuing the original
+
+Claude Code shipped a `/buddy` companion and removed it on 2026-04-09. The
+record was never deleted — it is still sitting in `~/.claude.json` under a
+top-level `companion` key, with the buddy's name, its free-text personality,
+and the real `hatchedAt` timestamp.
+
+```sh
+node dist/cli.js rescue                       # identity + grafted history
+node dist/cli.js rescue --events none         # identity only, from level 1
+node dist/cli.js rescue --personality gremlin # override the inference
+```
+
+`rescue` takes the **identity** (name, description, true birth date) from
+`~/.claude.json` and optionally grafts the **progression** (level, lifetime XP,
+event history) from a `@fiorastudio/buddy` database — so the original companion
+comes back with the work a later one actually did.
+
+Because Anthropic stored a free-text personality rather than one of our five,
+`rescue` infers the closest match from that description by keyword, and prints
+when it has done so. Pass `--personality` to decide yourself. The original
+description is kept verbatim in the `bio` column and shown on the status card;
+it is the one thing a fixed-personality system cannot reconstruct.
+
+The original record has **no species field**, so a species cannot be recovered
+from it — stages here are level-based anyway.
+
 ## Development
 
 ```sh
 npm run build
-npm test     # 57 tests: engine, storage, skills, import, end-to-end MCP
+npm test     # 74 tests: engine, storage, skills, import, rescue, end-to-end MCP
 ```

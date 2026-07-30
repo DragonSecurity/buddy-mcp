@@ -15,7 +15,7 @@ export function dbPath(): string {
   return join(stateDir(), 'buddy.db');
 }
 
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 
 let handle: DatabaseSync | null = null;
 let handlePath = '';
@@ -53,8 +53,16 @@ function userVersion(db: DatabaseSync): number {
 }
 
 function migrate(db: DatabaseSync): void {
-  if (userVersion(db) >= SCHEMA_VERSION) return;
+  const from = userVersion(db);
+  if (from >= SCHEMA_VERSION) return;
 
+  if (from < 1) migrateV1(db);
+  if (from < 2) migrateV2(db);
+
+  db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
+}
+
+function migrateV1(db: DatabaseSync): void {
   db.exec(`
     -- Single-row table; the CHECK makes a second buddy unrepresentable rather
     -- than merely unreachable.
@@ -118,6 +126,15 @@ function migrate(db: DatabaseSync): void {
       at    INTEGER NOT NULL
     );
   `);
+}
 
-  db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
+/**
+ * `bio` carries a rescued buddy's original free-text personality description —
+ * the one thing a five-personality system can't reconstruct.
+ */
+function migrateV2(db: DatabaseSync): void {
+  const columns = db.prepare('PRAGMA table_info(buddy)').all() as { name: string }[];
+  if (!columns.some((c) => c.name === 'bio')) {
+    db.exec(`ALTER TABLE buddy ADD COLUMN bio TEXT NOT NULL DEFAULT ''`);
+  }
 }

@@ -76,6 +76,10 @@ export function renderStatus(
     );
   }
 
+  if (state.bio) {
+    lines.push('', `_${state.bio}_`);
+  }
+
   const recent = recentMilestones(state, 3);
   if (recent.length > 0) {
     lines.push('', `Recently: ${recent.map((m) => m.text.replace(/\.$/, '')).join(' · ')}`);
