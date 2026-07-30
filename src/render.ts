@@ -9,7 +9,7 @@ import {
 } from './engine.js';
 import type { ObserveResult } from './engine.js';
 import { PERSONALITIES } from './personality.js';
-import type { Suggestion, SkillStat } from './skills.js';
+import type { Advice, SkillAffinity, Suggestion, SkillStat } from './skills.js';
 import type { BuddyState, MoodTier } from './types.js';
 
 const MOOD_EMOJI: Record<MoodTier, string> = {
@@ -89,7 +89,46 @@ export function renderStatus(
   return lines.join('\n');
 }
 
-export function renderSkills(stats: SkillStat[]): string {
+function firstSentence(text: string, max = 110): string {
+  const first = text.split(/(?<=[.!?])\s/)[0] || text;
+  return first.length > max ? `${first.slice(0, max - 1)}…` : first;
+}
+
+export function renderAdvice(state: BuddyState, kind: string, advice: Advice[]): string {
+  if (advice.length === 0) {
+    return `${state.name} doesn't know a skill that fits this (${kind}). Carry on unaided.`;
+  }
+
+  const lines = [`${state.name} suggests, for **${kind}** work:`, ''];
+  advice.forEach((a, i) => {
+    const pct = Math.round(a.score * 100);
+    lines.push(`${i + 1}. \`${a.skill}\` — ${pct}% · ${a.reason}`);
+    if (a.description) lines.push(`   ${firstSentence(a.description)}`);
+  });
+
+  const learned = advice.some((a) => a.kindUses > 0);
+  if (!learned) {
+    lines.push('', `_No ${kind} history yet — this ranking is from descriptions alone. It sharpens as you record skills_used._`);
+  }
+  return lines.join('\n');
+}
+
+export function renderAffinity(byKind: Record<string, SkillAffinity[]>): string {
+  const kinds = Object.keys(byKind).filter((k) => byKind[k]!.length > 0);
+  if (kinds.length === 0) return '';
+
+  const lines = ['**What you reach for**'];
+  for (const kind of kinds) {
+    const top = byKind[kind]!.slice(0, 3);
+    const rendered = top
+      .map((a) => `${a.skill} ${Math.round(a.share * 100)}%`)
+      .join(' · ');
+    lines.push(`  ${kind.padEnd(9)} ${rendered}`);
+  }
+  return lines.join('\n');
+}
+
+export function renderSkills(stats: SkillStat[], byKind: Record<string, SkillAffinity[]> = {}): string {
   if (stats.length === 0) {
     return 'No skills discovered yet. Install a plugin or add `.claude/skills/` to this project.';
   }
@@ -104,6 +143,10 @@ export function renderSkills(stats: SkillStat[]): string {
 
   const out = [`**Skills** — ${used.length} of ${stats.length} used`];
   if (used.length) out.push('', ...used.map(line));
+
+  const affinity = renderAffinity(byKind);
+  if (affinity) out.push('', affinity);
+
   if (unused.length) {
     out.push('', `Never used (${unused.length}): ${unused.map((s) => s.name).join(', ')}`);
   }

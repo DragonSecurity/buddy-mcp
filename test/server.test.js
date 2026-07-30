@@ -36,7 +36,17 @@ describe('mcp server', () => {
   it('advertises the buddy tools', async () => {
     const { tools } = await client.listTools();
     const names = tools.map((t) => t.name).sort();
-    assert.deepEqual(names, ['buddy_observe', 'buddy_rename', 'buddy_skills', 'buddy_status']);
+    assert.deepEqual(names, [
+      'buddy_advise',
+      'buddy_observe',
+      'buddy_rename',
+      'buddy_skills',
+      'buddy_status',
+    ]);
+
+    const advise = tools.find((t) => t.name === 'buddy_advise');
+    assert.deepEqual(advise.inputSchema.required, ['task']);
+    assert.ok(advise.inputSchema.properties.limit, 'limit is exposed');
 
     const observe = tools.find((t) => t.name === 'buddy_observe');
     assert.ok(observe.description.length > 0);
@@ -112,6 +122,45 @@ describe('mcp server', () => {
     });
     const out = textOf(await client.callTool({ name: 'buddy_skills', arguments: {} }));
     assert.match(out, /cloudflare:wrangler/);
+  });
+
+  it('advises on a task and learns from recorded usage', async () => {
+    const cold = textOf(
+      await client.callTool({
+        name: 'buddy_advise',
+        arguments: { task: 'deploy a cloudflare worker with wrangler' },
+      }),
+    );
+    assert.match(cold, /deploy/, 'infers the task kind');
+
+    await client.callTool({
+      name: 'buddy_observe',
+      arguments: {
+        summary: 'Deployed a worker.',
+        kind: 'deploy',
+        skills_used: ['cloudflare:wrangler'],
+      },
+    });
+
+    const warm = textOf(
+      await client.callTool({
+        name: 'buddy_advise',
+        arguments: { task: 'deploy a cloudflare worker with wrangler', limit: 2 },
+      }),
+    );
+    assert.match(warm, /cloudflare:wrangler/);
+    // Count is not pinned: earlier cases in this file also record wrangler use.
+    assert.match(warm, /used \d+× for deploy work/, 'reflects recorded history');
+  });
+
+  it('says so plainly when no skill fits', async () => {
+    const out = textOf(
+      await client.callTool({
+        name: 'buddy_advise',
+        arguments: { task: 'zzzqqq nonsense tokens xyzzy' },
+      }),
+    );
+    assert.match(out, /doesn't know a skill that fits/i);
   });
 
   it('renames without losing progress', async () => {

@@ -140,6 +140,122 @@ export function skillStats(): SkillStat[] {
   }));
 }
 
+export interface SkillAffinity {
+  skill: string;
+  /** Times this skill was used for this kind of task. */
+  uses: number;
+  /** This skill's share of all skill use for this kind, 0..1. */
+  share: number;
+}
+
+/**
+ * What you actually reach for when doing a given kind of work. This is the
+ * learned half of the recommendation — independent of anything the task
+ * description happens to say.
+ */
+export function affinityFor(kind: string): SkillAffinity[] {
+  const rows = getDb()
+    .prepare('SELECT skill, count(*) AS n FROM skill_uses WHERE kind = ? GROUP BY skill ORDER BY n DESC, skill ASC')
+    .all(kind) as { skill: string; n: number }[];
+
+  const total = rows.reduce((sum, r) => sum + Number(r.n), 0);
+  return rows.map((r) => ({
+    skill: r.skill,
+    uses: Number(r.n),
+    share: total > 0 ? Number(r.n) / total : 0,
+  }));
+}
+
+/** The same ranking for every kind that has any recorded usage. */
+export function affinityByKind(): Record<string, SkillAffinity[]> {
+  const kinds = getDb()
+    .prepare("SELECT DISTINCT kind FROM skill_uses WHERE kind != '' ORDER BY kind")
+    .all() as { kind: string }[];
+
+  const out: Record<string, SkillAffinity[]> = {};
+  for (const k of kinds) out[k.kind] = affinityFor(k.kind);
+  return out;
+}
+
+export interface Advice {
+  skill: string;
+  description: string;
+  /** Blended 0..1 confidence. */
+  score: number;
+  /** Raw token-overlap score against the task description. */
+  relevance: number;
+  /** Share of this kind's skill use, 0..1. */
+  affinity: number;
+  /** Times used for this kind specifically. */
+  kindUses: number;
+  /** Times used overall. */
+  uses: number;
+  reason: string;
+}
+
+// Relevance leads — a skill must plausibly fit the task at hand. Affinity is
+// the learned correction: what you reach for once the field is narrowed.
+const W_RELEVANCE = 0.65;
+const W_AFFINITY = 0.35;
+
+/**
+ * Relevance is scored against this absolute ceiling rather than against the
+ * best candidate in the field. Normalising against the field would score a
+ * single incidental token match as a perfect match whenever the field is weak,
+ * which buries a skill you demonstrably always use under one you never have.
+ * 6 ≈ two name hits, or six description hits.
+ */
+const RELEVANCE_FULL = 6;
+
+function reasonFor(a: { relevance: number; kindUses: number; uses: number }, kind: string): string {
+  const parts: string[] = [];
+  if (a.relevance > 0) parts.push('matches this task');
+  if (a.kindUses > 0) {
+    parts.push(`used ${a.kindUses}× for ${kind} work`);
+  } else if (a.uses > 0) {
+    parts.push(`used ${a.uses}× overall, never for ${kind}`);
+  } else {
+    parts.push('never used');
+  }
+  return parts.join(' · ');
+}
+
+/**
+ * Ranks skills for a task you are about to start. Combines what the task says
+ * with what you have historically reached for on this kind of work, so a skill
+ * you always use for deploys outranks one that merely shares a keyword.
+ */
+export function advise(task: string, kind: string, limit = 3): Advice[] {
+  const rows = getDb()
+    .prepare('SELECT name, source, description, uses FROM skills')
+    .all() as { name: string; source: string; description: string; uses: number }[];
+  if (rows.length === 0) return [];
+
+  const affinity = new Map(affinityFor(kind).map((a) => [a.skill, a]));
+
+  const scored = rows.map((r) => {
+    const a = affinity.get(r.name);
+    return {
+      skill: r.name,
+      description: r.description,
+      relevance: scoreSkill({ name: r.name, source: r.source, description: r.description }, task),
+      affinity: a ? a.share : 0,
+      kindUses: a ? a.uses : 0,
+      uses: Number(r.uses),
+    };
+  });
+
+  return scored
+    .map((s) => {
+      const relNorm = Math.min(1, s.relevance / RELEVANCE_FULL);
+      const score = W_RELEVANCE * relNorm + W_AFFINITY * s.affinity;
+      return { ...s, score, reason: reasonFor(s, kind) };
+    })
+    .filter((s) => s.score > 0)
+    .sort((a, b) => b.score - a.score || a.skill.localeCompare(b.skill))
+    .slice(0, Math.max(1, limit));
+}
+
 const STOPWORDS = new Set([
   'the', 'and', 'for', 'with', 'that', 'this', 'from', 'into', 'was', 'were', 'has', 'have',
   'add', 'added', 'fix', 'fixed', 'use', 'used', 'using', 'new', 'all', 'out', 'get', 'set',

@@ -32,8 +32,9 @@ claude mcp add buddy-mcp --scope user -- node /absolute/path/to/buddy-mcp/dist/i
 | Tool | Arguments | What it does |
 | --- | --- | --- |
 | `buddy_status` | — | Status card. Hatches a buddy on first use. |
+| `buddy_advise` | `task`, optional `kind`, optional `limit` | Ranks the skills worth loading **before** you start. |
 | `buddy_observe` | `summary`, optional `kind`, optional `skills_used` | Records a task, grants XP, reacts, and may suggest a skill. |
-| `buddy_skills` | — | Lists discovered skills and how often each is used. |
+| `buddy_skills` | — | Lists discovered skills, usage, and what you reach for per task kind. |
 | `buddy_rename` | `name` | Renames the buddy. Progress and personality untouched. |
 
 Add this to `~/.claude/CLAUDE.md` so Claude uses it:
@@ -45,6 +46,9 @@ You have a coding companion available via the buddy MCP server.
 
 **After completing any coding task**, call `buddy_observe` with a 1-sentence
 summary, passing `skills_used` if you invoked any skills.
+
+Before starting non-trivial work, call `buddy_advise` with what you are about
+to do and load any skill it ranks highly.
 
 At the start of each conversation, call `buddy_status`.
 ```
@@ -76,6 +80,42 @@ suffix stemming so "dashboards" matches "dashboard". A name hit counts triple.
 The buddy will not suggest a skill you used in the last 7 days, will not
 suggest one you passed in `skills_used`, and gives up on any given skill after
 3 unheeded suggestions.
+
+### Advice
+
+`buddy_advise` answers the other half: *before* starting, which skills should I
+load? It blends two signals —
+
+- **relevance** — token overlap with the task description, scored against an
+  absolute ceiling rather than against the rest of the field. Normalising
+  against the field would score one incidental word as a perfect match whenever
+  nothing else competes.
+- **affinity** — this skill's share of everything you've used for *this kind*
+  of task, from `skill_uses`.
+
+```
+Emberchaos suggests, for deploy work:
+
+1. `cloudflare:wrangler` — 89% · matches this task · used 4× for deploy work
+2. `cloudflare:workers-best-practices` — 65% · matches this task · never used
+```
+
+Relevance leads at 65% weight, so a skill can't win on habit alone. Affinity is
+the correction that decides between candidates the description can't separate —
+and it's the only thing that can rank a skill with no description at all.
+
+That matters more than it sounds: **skills bundled with Claude Code aren't in
+the plugin cache**, so the buddy only learns they exist when you name them in
+`skills_used`, and they arrive with an empty description. Affinity is the only
+signal they will ever have. Ranking that ignored it would permanently bury them.
+
+`buddy_skills` shows the learned side:
+
+```
+What you reach for
+  deploy    cloudflare:wrangler 100%
+  feature   dataviz 100%
+```
 
 ## Mechanics
 
@@ -167,5 +207,5 @@ from it — stages here are level-based anyway.
 
 ```sh
 npm run build
-npm test     # 74 tests: engine, storage, skills, import, rescue, end-to-end MCP
+npm test     # 95 tests: engine, storage, skills, advice, import, rescue, end-to-end MCP
 ```

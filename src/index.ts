@@ -3,9 +3,11 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 
-import { applyIdle, observe, stageFor, touchStreak } from './engine.js';
-import { renderObserve, renderSkills, renderStatus } from './render.js';
+import { applyIdle, classify, observe, stageFor, touchStreak } from './engine.js';
+import { renderAdvice, renderObserve, renderSkills, renderStatus } from './render.js';
 import {
+  advise,
+  affinityByKind,
   discoverSkills,
   recordSkillUses,
   skillStats,
@@ -126,11 +128,61 @@ server.registerTool(
     title: "See what your buddy knows",
     description:
       'List the skills the buddy has discovered across installed plugins, your personal ' +
-      'skills directory and the current project, with how often each has been used.',
+      'skills directory and the current project, with how often each has been used and ' +
+      'which ones you reach for by task kind.',
     inputSchema: {},
-    annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
+    // Refreshes the discovery registry, so not strictly read-only.
+    annotations: { readOnlyHint: false, idempotentHint: true, openWorldHint: false },
   },
-  async () => text(renderSkills(refreshSkills(new Date()))),
+  async () => {
+    const stats = refreshSkills(new Date());
+    let byKind = {};
+    try {
+      byKind = affinityByKind();
+    } catch {
+      /* affinity is a nicety; never break the listing */
+    }
+    return text(renderSkills(stats, byKind));
+  },
+);
+
+server.registerTool(
+  'buddy_advise',
+  {
+    title: 'Ask which skills fit before you start',
+    description:
+      'Rank the skills worth loading for a task you are about to begin. Combines what the ' +
+      'task description says with which skills you have historically used for this kind of ' +
+      'work. Call this BEFORE starting non-trivial work, then load any skill it ranks highly. ' +
+      'Record what you actually used via buddy_observe(skills_used) so the ranking improves.',
+    inputSchema: {
+      task: z
+        .string()
+        .min(1)
+        .max(500)
+        .describe('What you are about to do, e.g. "add a KV binding to the Cloudflare Worker".'),
+      kind: z
+        .enum(OBSERVATION_KINDS)
+        .optional()
+        .describe('Optional category override. Inferred from the task when omitted.'),
+      limit: z
+        .number()
+        .int()
+        .min(1)
+        .max(10)
+        .optional()
+        .describe('How many skills to return. Defaults to 3.'),
+    },
+    annotations: { readOnlyHint: false, idempotentHint: true, openWorldHint: false },
+  },
+  async ({ task, kind, limit }) => {
+    const now = new Date();
+    const { state } = load(now);
+    refreshSkills(now);
+
+    const resolved = kind ?? classify(task);
+    return text(renderAdvice(state, resolved, advise(task, resolved, limit ?? 3)));
+  },
 );
 
 server.registerTool(
