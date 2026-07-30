@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
@@ -13,7 +13,9 @@ after(() => rmSync(home, { recursive: true, force: true }));
 
 const { classify, observe, stageFor, xpForLevel, touchStreak, applyIdle, moodScore, moodTier } =
   await import('../dist/engine.js');
-const { hatch, load, save, statePath, localDay } = await import('../dist/state.js');
+const { hatch, load, save, statePath, stateDir, localDay, closeDb, recordEvent } =
+  await import('../dist/state.js');
+const { getDb } = await import('../dist/db.js');
 
 const T0 = new Date('2026-07-30T10:00:00Z');
 const hoursLater = (base, h) => new Date(base.getTime() + h * 3_600_000);
@@ -164,9 +166,17 @@ describe('energy and mood', () => {
   });
 });
 
+/** Drops the cached handle and the file, so the next load() hatches fresh. */
+function resetDb() {
+  closeDb();
+  rmSync(statePath(), { force: true });
+  rmSync(`${statePath()}-wal`, { force: true });
+  rmSync(`${statePath()}-shm`, { force: true });
+}
+
 describe('persistence', () => {
   it('hatches on first load and reloads the same buddy', () => {
-    rmSync(statePath(), { force: true });
+    resetDb();
     const first = load(T0);
     assert.equal(first.hatched, true);
 
@@ -176,34 +186,70 @@ describe('persistence', () => {
     assert.equal(second.state.personality, first.state.personality);
   });
 
-  it('round-trips progress through disk', () => {
-    rmSync(statePath(), { force: true });
+  it('round-trips progress through the database', () => {
+    resetDb();
     const { state } = load(T0);
-    observe(state, 'Deployed to production', T0);
+    const r = observe(state, 'Deployed to production', T0);
     save(state);
+    recordEvent(r.kind, r.xpGained, 'Deployed to production', T0);
 
     const reloaded = load(T0).state;
     assert.equal(reloaded.totalXp, state.totalXp);
-    assert.equal(reloaded.observations, 1);
+    assert.equal(reloaded.level, state.level);
+    assert.equal(reloaded.observations, 1, 'observations are derived from the events table');
     assert.equal(reloaded.kindCounts.deploy, 1);
   });
 
-  it('quarantines a corrupt file instead of crashing', () => {
-    writeFileSync(statePath(), '{ not json at all', 'utf8');
+  it('keeps an append-only event history', () => {
+    resetDb();
+    const { state } = load(T0);
+    for (let i = 0; i < 5; i++) {
+      const r = observe(state, 'Fixed a bug', hoursLater(T0, i));
+      recordEvent(r.kind, r.xpGained, 'Fixed a bug', hoursLater(T0, i));
+    }
+    save(state);
+    assert.equal(load(T0).state.observations, 5);
+  });
+
+  it('enforces a single buddy at the schema level', () => {
+    resetDb();
+    load(T0);
+    const db = getDb();
+    assert.throws(
+      () => db.exec("INSERT INTO buddy (id, name, personality, born_at, last_seen_at, last_seen_day) VALUES (2, 'Impostor', 'zen', 0, 0, '2026-01-01')"),
+      /CHECK constraint failed|constraint/i,
+      'a second buddy row must be unrepresentable',
+    );
+  });
+
+  it('stores timestamps as integers, not zone-less strings', () => {
+    resetDb();
+    load(T0);
+    const row = getDb().prepare('SELECT born_at, last_seen_at FROM buddy WHERE id = 1').get();
+    assert.equal(typeof row.born_at, 'number');
+    assert.equal(typeof row.last_seen_at, 'number');
+    // The upstream UTC-parsed-as-local bug shows up as an offset of whole hours.
+    assert.ok(Math.abs(row.born_at - T0.getTime()) < 1000, `born_at drifted: ${row.born_at - T0.getTime()}ms`);
+  });
+
+  it('quarantines an unreadable database instead of crashing', () => {
+    resetDb();
+    writeFileSync(statePath(), 'this is definitely not a sqlite file', 'utf8');
+    closeDb();
     const { state, hatched } = load(T0);
     assert.equal(hatched, true);
     assert.equal(state.level, 1);
-    assert.doesNotThrow(() => JSON.parse(readFileSync(statePath(), 'utf8')));
+    assert.ok(
+      readdirSync(stateDir()).some((f) => f.includes('corrupt')),
+      'the unreadable file is preserved, not deleted',
+    );
   });
 
-  it('repairs missing or nonsense fields', () => {
-    writeFileSync(
-      statePath(),
-      JSON.stringify({ name: 'Ghost', level: -5, energy: 999, personality: 'nonexistent' }),
-      'utf8',
-    );
+  it('clamps nonsense values written directly to the row', () => {
+    resetDb();
+    load(T0);
+    getDb().exec("UPDATE buddy SET level = -5, energy = 999, personality = 'nonexistent' WHERE id = 1");
     const { state } = load(T0);
-    assert.equal(state.name, 'Ghost');
     assert.equal(state.level, 1);
     assert.equal(state.energy, 100);
     assert.ok(['snarky', 'cheerful', 'stoic', 'gremlin', 'zen'].includes(state.personality));

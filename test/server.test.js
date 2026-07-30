@@ -36,12 +36,13 @@ describe('mcp server', () => {
   it('advertises the buddy tools', async () => {
     const { tools } = await client.listTools();
     const names = tools.map((t) => t.name).sort();
-    assert.deepEqual(names, ['buddy_observe', 'buddy_rename', 'buddy_status']);
+    assert.deepEqual(names, ['buddy_observe', 'buddy_rename', 'buddy_skills', 'buddy_status']);
 
     const observe = tools.find((t) => t.name === 'buddy_observe');
     assert.ok(observe.description.length > 0);
     assert.deepEqual(observe.inputSchema.required, ['summary']);
     assert.ok(observe.inputSchema.properties.kind, 'kind is exposed as an optional override');
+    assert.ok(observe.inputSchema.properties.skills_used, 'skills_used is exposed');
   });
 
   it('hatches on the first status call', async () => {
@@ -97,6 +98,20 @@ describe('mcp server', () => {
   it('rejects an empty summary', async () => {
     const res = await client.callTool({ name: 'buddy_observe', arguments: { summary: '' } });
     assert.equal(res.isError, true);
+  });
+
+  it('lists discovered skills', async () => {
+    const out = textOf(await client.callTool({ name: 'buddy_skills', arguments: {} }));
+    assert.match(out, /Skills|No skills discovered/);
+  });
+
+  it('accepts skills_used and counts it', async () => {
+    await client.callTool({
+      name: 'buddy_observe',
+      arguments: { summary: 'Deployed a Worker.', skills_used: ['cloudflare:wrangler'] },
+    });
+    const out = textOf(await client.callTool({ name: 'buddy_skills', arguments: {} }));
+    assert.match(out, /cloudflare:wrangler/);
   });
 
   it('renames without losing progress', async () => {

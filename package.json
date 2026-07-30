@@ -1,10 +1,11 @@
 {
   "name": "buddy-mcp",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "description": "A persistent coding companion for Claude Code, served over MCP.",
   "type": "module",
   "bin": {
-    "buddy-mcp": "dist/index.js"
+    "buddy-mcp": "dist/index.js",
+    "buddy-import": "dist/cli.js"
   },
   "main": "dist/index.js",
   "files": [

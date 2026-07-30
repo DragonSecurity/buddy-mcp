@@ -4,32 +4,51 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod';
 
 import { applyIdle, observe, stageFor, touchStreak } from './engine.js';
-import { renderObserve, renderStatus } from './render.js';
-import { load, save, statePath } from './state.js';
+import { renderObserve, renderSkills, renderStatus } from './render.js';
+import {
+  discoverSkills,
+  recordSkillUses,
+  skillStats,
+  suggestSkill,
+  syncSkills,
+} from './skills.js';
+import { load, recordEvent, save, statePath } from './state.js';
 import { OBSERVATION_KINDS } from './types.js';
 
-const VERSION = '1.0.0';
+const VERSION = '2.0.0';
 
 const server = new McpServer(
   { name: 'buddy', version: VERSION },
   {
     instructions:
-      'A persistent coding companion that levels up as you work. Call buddy_status at the ' +
-      'start of a conversation, and buddy_observe after completing any coding task. Relay the ' +
-      "buddy's reaction to the user verbatim — the personality is the point.",
+      'A persistent coding companion that levels up as you work and learns which of your ' +
+      'skills fit which tasks. Call buddy_status at the start of a conversation, and ' +
+      'buddy_observe after completing any coding task — passing skills_used when you invoked ' +
+      "a skill. Relay the buddy's reaction to the user verbatim; the personality is the point.",
   },
 );
 
 const text = (s: string) => ({ content: [{ type: 'text' as const, text: s }] });
+
+/** Refreshes the registry so newly installed plugins show up without a restart. */
+function refreshSkills(now: Date) {
+  try {
+    syncSkills(discoverSkills(), now);
+    return skillStats();
+  } catch {
+    // Skill discovery is a nicety; never let it break the buddy.
+    return [];
+  }
+}
 
 server.registerTool(
   'buddy_status',
   {
     title: 'Check on your buddy',
     description:
-      'Show the buddy: stage, level, XP, mood, energy and streak. Hatches a new buddy on ' +
-      'first use (name and personality are rolled once and kept for life). Safe to call ' +
-      'at the start of every conversation. Show the returned card to the user as-is.',
+      'Show the buddy: stage, level, XP, mood, energy, streak and skill usage. Hatches a new ' +
+      'buddy on first use (name and personality are rolled once and kept for life). Safe to ' +
+      'call at the start of every conversation. Show the returned card to the user as-is.',
     inputSchema: {},
     annotations: { readOnlyHint: false, idempotentHint: true, openWorldHint: false },
   },
@@ -38,7 +57,7 @@ server.registerTool(
     const { state, hatched } = load(now);
     applyIdle(state, now);
     if (!hatched) touchStreak(state, now);
-    const card = renderStatus(state, now, hatched);
+    const card = renderStatus(state, now, hatched, refreshSkills(now));
     state.lastSeenAt = now.toISOString();
     save(state);
     return text(card);
@@ -52,8 +71,9 @@ server.registerTool(
     description:
       'Record a completed coding task. Grants XP, may trigger a level-up or evolution, and ' +
       'returns a personality-flavored reaction. Call this after writing code, fixing bugs, ' +
-      'refactoring, running tests, or deploying. Pass a single plain sentence describing ' +
-      'what was done. Show the returned reaction to the user.',
+      'refactoring, running tests, or deploying. Pass skills_used listing any skills you ' +
+      'invoked, so the buddy learns which skills suit which work and can suggest ones you ' +
+      'are missing. Show the returned reaction to the user.',
     inputSchema: {
       summary: z
         .string()
@@ -64,24 +84,53 @@ server.registerTool(
         .enum(OBSERVATION_KINDS)
         .optional()
         .describe('Optional category override. Inferred from the summary when omitted.'),
+      skills_used: z
+        .array(z.string().min(1).max(80))
+        .max(10)
+        .optional()
+        .describe('Skills invoked for this task, e.g. ["cloudflare:wrangler"]. Omit if none.'),
     },
     annotations: { readOnlyHint: false, idempotentHint: false, openWorldHint: false },
   },
-  async ({ summary, kind }) => {
+  async ({ summary, kind, skills_used }) => {
     const now = new Date();
     const { state, hatched } = load(now);
     applyIdle(state, now);
+
     const result = observe(state, summary, now, kind);
     save(state);
+    recordEvent(result.kind, result.xpGained, summary, now);
 
-    const card = renderObserve(state, result);
-    // First contact ever: introduce the buddy before its first reaction.
+    const used = skills_used ?? [];
+    refreshSkills(now);
+    if (used.length) recordSkillUses(used, result.kind, now);
+
+    let suggestion = null;
+    try {
+      suggestion = suggestSkill(summary, used, now);
+    } catch {
+      // A failed suggestion must never cost the user their XP.
+    }
+
+    const card = renderObserve(state, result, suggestion);
     if (hatched) {
-      const stage = stageFor(state.level);
-      return text(`${stage.emoji} A buddy hatched to witness this.\n\n${card}`);
+      return text(`${stageFor(state.level).emoji} A buddy hatched to witness this.\n\n${card}`);
     }
     return text(card);
   },
+);
+
+server.registerTool(
+  'buddy_skills',
+  {
+    title: "See what your buddy knows",
+    description:
+      'List the skills the buddy has discovered across installed plugins, your personal ' +
+      'skills directory and the current project, with how often each has been used.',
+    inputSchema: {},
+    annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
+  },
+  async () => text(renderSkills(refreshSkills(new Date()))),
 );
 
 server.registerTool(

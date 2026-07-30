@@ -9,6 +9,7 @@ import {
 } from './engine.js';
 import type { ObserveResult } from './engine.js';
 import { PERSONALITIES } from './personality.js';
+import type { Suggestion, SkillStat } from './skills.js';
 import type { BuddyState, MoodTier } from './types.js';
 
 const MOOD_EMOJI: Record<MoodTier, string> = {
@@ -39,7 +40,12 @@ function age(iso: string, now: Date): string {
   return d === 0 ? 'born today' : `${plural(d, 'day')} old`;
 }
 
-export function renderStatus(state: BuddyState, now: Date, hatched: boolean): string {
+export function renderStatus(
+  state: BuddyState,
+  now: Date,
+  hatched: boolean,
+  skills: SkillStat[] = [],
+): string {
   const p = PERSONALITIES[state.personality];
   const stage = stageFor(state.level);
   const need = xpForLevel(state.level);
@@ -62,6 +68,14 @@ export function renderStatus(state: BuddyState, now: Date, hatched: boolean): st
     `Streak ${plural(state.streak, 'day')} (best ${state.longestStreak}) · ${plural(state.observations, 'observation')} · ${age(state.bornAt, now)}`,
   ];
 
+  if (skills.length > 0) {
+    const used = skills.filter((s) => s.uses > 0).length;
+    const favourite = skills.find((s) => s.uses > 0);
+    lines.push(
+      `Skills ${used}/${skills.length} used${favourite ? ` · most-used ${favourite.name} (${favourite.uses})` : ''}`,
+    );
+  }
+
   const recent = recentMilestones(state, 3);
   if (recent.length > 0) {
     lines.push('', `Recently: ${recent.map((m) => m.text.replace(/\.$/, '')).join(' · ')}`);
@@ -71,7 +85,34 @@ export function renderStatus(state: BuddyState, now: Date, hatched: boolean): st
   return lines.join('\n');
 }
 
-export function renderObserve(state: BuddyState, result: ObserveResult): string {
+export function renderSkills(stats: SkillStat[]): string {
+  if (stats.length === 0) {
+    return 'No skills discovered yet. Install a plugin or add `.claude/skills/` to this project.';
+  }
+
+  const used = stats.filter((s) => s.uses > 0);
+  const unused = stats.filter((s) => s.uses === 0);
+  const width = Math.max(...stats.map((s) => s.name.length));
+  const top = Math.max(1, ...stats.map((s) => s.uses));
+
+  const line = (s: SkillStat) =>
+    `  ${s.name.padEnd(width)}  ${bar(s.uses / top, 8, '▓', '░')} ${s.uses}`;
+
+  const out = [`**Skills** — ${used.length} of ${stats.length} used`];
+  if (used.length) out.push('', ...used.map(line));
+  if (unused.length) {
+    out.push('', `Never used (${unused.length}): ${unused.map((s) => s.name).join(', ')}`);
+  }
+  return out.join('\n');
+}
+
+function renderNudge(state: BuddyState, s: Suggestion): string {
+  const first = s.description.split(/(?<=[.!?])\s/)[0] || s.description;
+  const trimmed = first.length > 120 ? `${first.slice(0, 117)}…` : first;
+  return `💡 ${state.name} noticed \`${s.skill}\` fits this${s.uses === 0 ? " and you've never used it" : ''} — ${trimmed}`;
+}
+
+export function renderObserve(state: BuddyState, result: ObserveResult, suggestion?: Suggestion | null): string {
   const p = PERSONALITIES[state.personality];
   const stage = stageFor(state.level);
   const need = xpForLevel(state.level);
@@ -98,6 +139,7 @@ export function renderObserve(state: BuddyState, result: ObserveResult): string 
 
   lines.push('', `> ${result.reaction}`);
   if (result.tiredOut) lines.push('', `_${state.name} is running low on energy — they recover while you're away._`);
+  if (suggestion) lines.push('', renderNudge(state, suggestion));
 
   return lines.join('\n');
 }

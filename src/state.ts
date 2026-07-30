@@ -1,22 +1,15 @@
-import { randomUUID } from 'node:crypto';
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
-import { homedir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { renameSync } from 'node:fs';
+import type { DatabaseSync } from 'node:sqlite';
 
+import { closeDb, dbPath, getDb, stateDir } from './db.js';
 import { NAMES, PERSONALITIES } from './personality.js';
-import { OBSERVATION_KINDS, PERSONALITY_IDS } from './types.js';
-import type { BuddyState, ObservationKind, PersonalityId } from './types.js';
+import { PERSONALITY_IDS } from './types.js';
+import type { BuddyState, Milestone, ObservationKind, PersonalityId } from './types.js';
 
-/**
- * BUDDY_HOME lets tests (and curious users) point at a throwaway buddy.
- * Deliberately not `~/.buddy` — that belongs to @fiorastudio/buddy.
- */
-export function stateDir(): string {
-  return process.env.BUDDY_HOME || join(homedir(), '.buddy-mcp');
-}
-
+export { stateDir, dbPath, closeDb };
+/** Kept for callers that just want a human-facing location. */
 export function statePath(): string {
-  return join(stateDir(), 'state.json');
+  return dbPath();
 }
 
 export function localDay(d: Date): string {
@@ -24,21 +17,18 @@ export function localDay(d: Date): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
-function emptyKindCounts(): Record<ObservationKind, number> {
-  return Object.fromEntries(OBSERVATION_KINDS.map((k) => [k, 0])) as Record<ObservationKind, number>;
-}
-
 function pick<T>(arr: readonly T[]): T {
   return arr[Math.floor(Math.random() * arr.length)]!;
 }
 
+const clamp = (n: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, n));
+
 /** Rolls a brand-new buddy. Personality is fixed for life — that's the point. */
 export function hatch(now: Date): BuddyState {
-  const personality = pick(PERSONALITY_IDS) as PersonalityId;
   return {
     version: 1,
     name: pick(NAMES),
-    personality,
+    personality: pick(PERSONALITY_IDS) as PersonalityId,
     bornAt: now.toISOString(),
     level: 1,
     xp: 0,
@@ -50,56 +40,74 @@ export function hatch(now: Date): BuddyState {
     lastSeenDay: localDay(now),
     lastObservedDay: '',
     observations: 0,
-    kindCounts: emptyKindCounts(),
+    kindCounts: {} as Record<ObservationKind, number>,
     milestones: [{ at: now.toISOString(), text: 'Hatched.' }],
     lastReaction: '',
   };
 }
 
-/**
- * Fills in anything a hand-edited or older state file is missing, so a bad
- * field can't crash the server on every call.
- */
-function coerce(raw: unknown, now: Date): BuddyState | null {
-  if (!raw || typeof raw !== 'object') return null;
-  const o = raw as Record<string, unknown>;
-  const num = (v: unknown, fallback: number) =>
-    typeof v === 'number' && Number.isFinite(v) ? v : fallback;
-  const str = (v: unknown, fallback: string) => (typeof v === 'string' && v ? v : fallback);
+interface BuddyRow {
+  name: string;
+  personality: string;
+  born_at: number;
+  level: number;
+  xp: number;
+  total_xp: number;
+  energy: number;
+  streak: number;
+  longest_streak: number;
+  last_seen_at: number;
+  last_seen_day: string;
+  last_observed_day: string;
+  last_reaction: string;
+}
 
-  const personality = PERSONALITY_IDS.includes(o.personality as PersonalityId)
-    ? (o.personality as PersonalityId)
+const iso = (ms: number) => new Date(ms).toISOString();
+const ms = (isoStr: string, fallback: number) => {
+  const t = Date.parse(isoStr);
+  return Number.isFinite(t) ? t : fallback;
+};
+
+function rowToState(db: DatabaseSync, row: BuddyRow): BuddyState {
+  const counts = db
+    .prepare("SELECT kind, count(*) AS n FROM events WHERE kind != 'milestone' GROUP BY kind")
+    .all() as { kind: string; n: number }[];
+  const kindCounts = {} as Record<ObservationKind, number>;
+  for (const c of counts) kindCounts[c.kind as ObservationKind] = Number(c.n);
+
+  const observations = db
+    .prepare("SELECT count(*) AS n FROM events WHERE kind != 'milestone'")
+    .get() as { n: number };
+
+  const milestones = (
+    db.prepare('SELECT at, text FROM milestones ORDER BY at ASC, id ASC').all() as {
+      at: number;
+      text: string;
+    }[]
+  ).map((m) => ({ at: iso(m.at), text: m.text }));
+
+  const personality = PERSONALITY_IDS.includes(row.personality as PersonalityId)
+    ? (row.personality as PersonalityId)
     : pick(PERSONALITY_IDS);
-
-  const counts = emptyKindCounts();
-  if (o.kindCounts && typeof o.kindCounts === 'object') {
-    for (const k of OBSERVATION_KINDS) {
-      counts[k] = num((o.kindCounts as Record<string, unknown>)[k], 0);
-    }
-  }
 
   return {
     version: 1,
-    name: str(o.name, pick(NAMES)),
+    name: row.name || pick(NAMES),
     personality,
-    bornAt: str(o.bornAt, now.toISOString()),
-    level: Math.max(1, Math.floor(num(o.level, 1))),
-    xp: Math.max(0, num(o.xp, 0)),
-    totalXp: Math.max(0, num(o.totalXp, 0)),
-    energy: Math.min(100, Math.max(0, num(o.energy, 100))),
-    streak: Math.max(0, Math.floor(num(o.streak, 1))),
-    longestStreak: Math.max(0, Math.floor(num(o.longestStreak, 1))),
-    lastSeenAt: str(o.lastSeenAt, now.toISOString()),
-    lastSeenDay: str(o.lastSeenDay, localDay(now)),
-    lastObservedDay: typeof o.lastObservedDay === 'string' ? o.lastObservedDay : '',
-    observations: Math.max(0, Math.floor(num(o.observations, 0))),
-    kindCounts: counts,
-    milestones: Array.isArray(o.milestones)
-      ? (o.milestones as BuddyState['milestones'])
-          .filter((m) => m && typeof m.text === 'string')
-          .slice(-40)
-      : [],
-    lastReaction: str(o.lastReaction, ''),
+    bornAt: iso(row.born_at),
+    level: Math.max(1, Math.floor(row.level)),
+    xp: Math.max(0, row.xp),
+    totalXp: Math.max(0, row.total_xp),
+    energy: clamp(row.energy, 0, 100),
+    streak: Math.max(0, Math.floor(row.streak)),
+    longestStreak: Math.max(0, Math.floor(row.longest_streak)),
+    lastSeenAt: iso(row.last_seen_at),
+    lastSeenDay: row.last_seen_day,
+    lastObservedDay: row.last_observed_day,
+    observations: Number(observations?.n ?? 0),
+    kindCounts,
+    milestones,
+    lastReaction: row.last_reaction,
   };
 }
 
@@ -110,49 +118,91 @@ export interface LoadResult {
 }
 
 export function load(now: Date): LoadResult {
-  const file = statePath();
-  let text: string;
+  let db: DatabaseSync;
   try {
-    text = readFileSync(file, 'utf8');
+    db = getDb();
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
-      const state = hatch(now);
-      save(state);
-      return { state, hatched: true };
-    }
-    throw err;
-  }
-
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(text);
-  } catch {
-    parsed = null;
-  }
-
-  const state = coerce(parsed, now);
-  if (!state) {
     // Don't silently destroy whatever was there — park it and start fresh.
+    closeDb();
     try {
-      renameSync(file, `${file}.corrupt-${Date.now()}`);
+      renameSync(dbPath(), `${dbPath()}.corrupt-${now.getTime()}`);
     } catch {
-      /* best effort */
+      throw err;
     }
-    const fresh = hatch(now);
-    save(fresh);
-    return { state: fresh, hatched: true };
+    db = getDb();
   }
 
-  return { state, hatched: false };
+  const row = db.prepare('SELECT * FROM buddy WHERE id = 1').get() as BuddyRow | undefined;
+  if (!row) {
+    const state = hatch(now);
+    save(state);
+    return { state, hatched: true };
+  }
+
+  return { state: rowToState(db, row), hatched: false };
 }
 
-/** Atomic write: a killed process can't leave a half-written buddy behind. */
 export function save(state: BuddyState): void {
-  const file = statePath();
-  mkdirSync(dirname(file), { recursive: true });
-  const tmp = `${file}.${randomUUID()}.tmp`;
-  writeFileSync(tmp, `${JSON.stringify(state, null, 2)}\n`, 'utf8');
-  renameSync(tmp, file);
+  const db = getDb();
+  const bornAt = ms(state.bornAt, Date.now());
+  const lastSeenAt = ms(state.lastSeenAt, Date.now());
+
+  db.prepare(
+    `INSERT INTO buddy (
+       id, name, personality, born_at, level, xp, total_xp, energy,
+       streak, longest_streak, last_seen_at, last_seen_day, last_observed_day, last_reaction
+     ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET
+       name = excluded.name,
+       personality = excluded.personality,
+       born_at = excluded.born_at,
+       level = excluded.level,
+       xp = excluded.xp,
+       total_xp = excluded.total_xp,
+       energy = excluded.energy,
+       streak = excluded.streak,
+       longest_streak = excluded.longest_streak,
+       last_seen_at = excluded.last_seen_at,
+       last_seen_day = excluded.last_seen_day,
+       last_observed_day = excluded.last_observed_day,
+       last_reaction = excluded.last_reaction`,
+  ).run(
+    state.name,
+    state.personality,
+    bornAt,
+    state.level,
+    state.xp,
+    state.totalXp,
+    state.energy,
+    state.streak,
+    state.longestStreak,
+    lastSeenAt,
+    state.lastSeenDay,
+    state.lastObservedDay,
+    state.lastReaction,
+  );
+
+  syncMilestones(db, state.milestones);
+}
+
+/**
+ * Milestones are capped and rewritten wholesale rather than appended: the
+ * in-memory array is the source of truth and never exceeds a few dozen rows.
+ */
+function syncMilestones(db: DatabaseSync, milestones: Milestone[]): void {
+  const existing = db.prepare('SELECT count(*) AS n FROM milestones').get() as { n: number };
+  if (Number(existing.n) === milestones.length) return;
+
+  db.exec('DELETE FROM milestones');
+  const insert = db.prepare('INSERT INTO milestones (at, text) VALUES (?, ?)');
+  for (const m of milestones) insert.run(ms(m.at, Date.now()), m.text);
+}
+
+/** Append-only history. This is what per-skill and per-kind stats are built on. */
+export function recordEvent(kind: string, xp: number, summary: string, now: Date): void {
+  getDb()
+    .prepare('INSERT INTO events (at, kind, xp, summary) VALUES (?, ?, ?, ?)')
+    .run(now.getTime(), kind, xp, summary.slice(0, 500));
 }
 
 export { PERSONALITIES };

@@ -179,7 +179,9 @@ export function observe(
   state.xp += xpGained;
   state.totalXp += xpGained;
   state.observations += 1;
-  state.kindCounts[kind] += 1;
+  // Counts are rebuilt from a GROUP BY, so a kind with no events is absent
+  // rather than zero — `+= 1` on undefined would silently produce NaN.
+  state.kindCounts[kind] = (state.kindCounts[kind] ?? 0) + 1;
   state.energy = clamp(state.energy - 4, 0, 100);
 
   let leveledTo: number | null = null;
