@@ -274,3 +274,7 @@ from it — stages here are level-based anyway.
 npm run build
 npm test     # 153 tests: engine, storage, skills, scoping, advice, presence, backfill, import, rescue, end-to-end MCP
 ```
+
+## License
+
+Apache-2.0. See [LICENSE](LICENSE).
