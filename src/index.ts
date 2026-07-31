@@ -15,6 +15,7 @@ import {
   syncSkills,
   uninstalledPlugins,
 } from './skills.js';
+import { presence, recordHeartbeat } from './presence.js';
 import { load, recordEvent, save, statePath } from './state.js';
 import { OBSERVATION_KINDS } from './types.js';
 
@@ -32,6 +33,18 @@ const server = new McpServer(
 );
 
 const text = (s: string) => ({ content: [{ type: 'text' as const, text: s }] });
+
+/**
+ * Every tool call is evidence the buddy was alive. Recorded separately from
+ * work so a silent day can be told apart from a day the server was down.
+ */
+function beat(now: Date): void {
+  try {
+    recordHeartbeat(now);
+  } catch {
+    /* presence is diagnostic; never let it break a tool call */
+  }
+}
 
 /** Refreshes the registry so newly installed plugins show up without a restart. */
 function refreshSkills(now: Date) {
@@ -57,10 +70,17 @@ server.registerTool(
   },
   async () => {
     const now = new Date();
+    beat(now);
     const { state, hatched } = load(now);
     applyIdle(state, now);
     if (!hatched) touchStreak(state, now);
-    const card = renderStatus(state, now, hatched, refreshSkills(now));
+    let seen;
+    try {
+      seen = presence(now);
+    } catch {
+      /* diagnostic only */
+    }
+    const card = renderStatus(state, now, hatched, refreshSkills(now), seen);
     state.lastSeenAt = now.toISOString();
     save(state);
     return text(card);
@@ -97,6 +117,7 @@ server.registerTool(
   },
   async ({ summary, kind, skills_used }) => {
     const now = new Date();
+    beat(now);
     const { state, hatched } = load(now);
     applyIdle(state, now);
 
@@ -136,7 +157,9 @@ server.registerTool(
     annotations: { readOnlyHint: false, idempotentHint: true, openWorldHint: false },
   },
   async () => {
-    const stats = refreshSkills(new Date());
+    const now = new Date();
+    beat(now);
+    const stats = refreshSkills(now);
     let byKind = {};
     let stranded: string[] = [];
     try {
@@ -180,6 +203,7 @@ server.registerTool(
   },
   async ({ task, kind, limit }) => {
     const now = new Date();
+    beat(now);
     const { state } = load(now);
     refreshSkills(now);
 
@@ -200,6 +224,7 @@ server.registerTool(
   },
   async ({ name }) => {
     const now = new Date();
+    beat(now);
     const { state } = load(now);
     const old = state.name;
     state.name = name.trim();
@@ -210,6 +235,10 @@ server.registerTool(
 );
 
 async function main(): Promise<void> {
+  // Starting at all is evidence of a working buddy, even in a session that
+  // never calls a tool — that is the difference between "quiet" and "broken".
+  beat(new Date());
+
   const transport = new StdioServerTransport();
   await server.connect(transport);
   // stdout is the MCP channel — anything human-facing must go to stderr.

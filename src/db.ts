@@ -15,7 +15,7 @@ export function dbPath(): string {
   return join(stateDir(), 'buddy.db');
 }
 
-const SCHEMA_VERSION = 4;
+const SCHEMA_VERSION = 5;
 
 let handle: DatabaseSync | null = null;
 let handlePath = '';
@@ -69,6 +69,7 @@ function migrate(db: DatabaseSync): void {
     if (from < 2) migrateV2(db);
     if (from < 3) migrateV3(db);
     if (from < 4) migrateV4(db);
+    if (from < 5) migrateV5(db);
     db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
     db.exec('COMMIT');
   } catch (err) {
@@ -209,4 +210,36 @@ function migrateV4(db: DatabaseSync): void {
   if (!columns.some((c) => c.name === 'available')) {
     db.exec('ALTER TABLE skills ADD COLUMN available INTEGER NOT NULL DEFAULT 1');
   }
+}
+
+/**
+ * Records that the buddy was running on a given day, separately from whether
+ * any work was recorded.
+ *
+ * Without this, a stretch of silence is ambiguous: it could mean the user was
+ * away, or it could mean the server was broken. That ambiguity is not
+ * theoretical — this buddy's predecessor was unloadable for 20 days after a
+ * Node upgrade while the user was at peak activity. Any rhythm measurement
+ * that reads that hole as absence draws exactly the wrong conclusion, so days
+ * with no heartbeat must be treated as UNKNOWN rather than scored.
+ *
+ * Existing history is backfilled: a day that recorded an observation self
+ * evidently had a working buddy.
+ */
+function migrateV5(db: DatabaseSync): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS heartbeats (
+      day      TEXT    PRIMARY KEY,
+      first_at INTEGER NOT NULL,
+      last_at  INTEGER NOT NULL,
+      beats    INTEGER NOT NULL DEFAULT 1,
+      source   TEXT    NOT NULL DEFAULT 'live'
+    );
+
+    INSERT OR IGNORE INTO heartbeats (day, first_at, last_at, beats, source)
+      SELECT date(at / 1000, 'unixepoch', 'localtime'),
+             min(at), max(at), count(*), 'backfill'
+        FROM events
+       GROUP BY 1;
+  `);
 }

@@ -171,7 +171,54 @@ times are epoch-millisecond integers — SQLite's `CURRENT_TIMESTAMP` is a
 zone-less UTC string that JavaScript parses as *local* time, which is a real
 bug worth designing out.
 
-An unreadable database is moved aside rather than deleted.
+An unreadable database is moved aside rather than deleted. Migrations run
+inside a single transaction, so an interrupted upgrade rolls back rather than
+leaving a schema that cannot be re-applied.
+
+## Presence: silence is not absence
+
+A day with no recorded work is ambiguous — you might have been away, or the
+buddy might have been broken. That distinction is not academic: this project
+exists partly because a companion sat unloadable for 20 days after a Node
+upgrade while its user was at peak activity. Any measurement that reads that
+hole as absence draws exactly the wrong conclusion.
+
+So the buddy records a `heartbeat` for every day it runs, independently of
+whether anything was observed. That yields three states rather than two:
+
+- **worked** — the buddy ran and recorded work
+- **quiet** — it ran, and nothing was recorded. Real evidence about you.
+- **unrecorded** — it never ran. Unknowable, and never scored.
+
+```
+Last 30 days: 10 worked · 20 unrecorded
+```
+
+`knownGaps()` returns intervals between active days only when every day in
+between is accounted for, so an outage can never be mistaken for working
+rhythm. Existing history is backfilled on migration: a day that recorded an
+observation self-evidently had a working buddy.
+
+## Backfilling imported history
+
+A companion imported from another implementation arrives with every event typed
+as a generic `observe`, carrying no behavioural signal. The descriptions were
+never lost, though — they were passed as tool arguments and are still in Claude
+Code's transcripts.
+
+```sh
+node dist/cli.js backfill --dry-run   # report, write nothing
+node dist/cli.js backfill             # match and relabel
+```
+
+Events are matched to transcript entries by timestamp (default ±120s) and
+reclassified with the current classifier. Only events still carrying the
+`imported:` placeholder are touched, so it is safe to re-run and cannot affect
+natively recorded work. **XP is left exactly as awarded** — the lifetime total
+already reflects it, and re-scoring history would only desync the two.
+
+Reach is limited by transcript retention (30 days by default), so older events
+stay generic rather than being guessed at.
 
 ## Relationship to @fiorastudio/buddy
 
@@ -225,5 +272,5 @@ from it — stages here are level-based anyway.
 
 ```sh
 npm run build
-npm test     # 110 tests: engine, storage, skills, scoping, advice, import, rescue, end-to-end MCP
+npm test     # 153 tests: engine, storage, skills, scoping, advice, presence, backfill, import, rescue, end-to-end MCP
 ```

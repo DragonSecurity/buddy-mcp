@@ -9,6 +9,7 @@ import {
 } from './engine.js';
 import type { ObserveResult } from './engine.js';
 import { PERSONALITIES } from './personality.js';
+import type { Presence } from './presence.js';
 import type { Advice, SkillAffinity, Suggestion, SkillStat } from './skills.js';
 import type { BuddyState, MoodTier } from './types.js';
 
@@ -45,6 +46,7 @@ export function renderStatus(
   now: Date,
   hatched: boolean,
   skills: SkillStat[] = [],
+  seen?: Presence,
 ): string {
   const p = PERSONALITIES[state.personality];
   const stage = stageFor(state.level);
@@ -67,6 +69,15 @@ export function renderStatus(
     `Mood  ${MOOD_EMOJI[tier]} ${p.moods[tier]}   ·   Energy ${bar(state.energy / 100, 10, '▓', '░')} ${Math.round(state.energy)}%`,
     `Streak ${plural(state.streak, 'day')} (best ${state.longestStreak}) · ${plural(state.observations, 'observation')} · ${age(state.bornAt, now)}`,
   ];
+
+  if (seen && seen.active > 0) {
+    // "unknown" is deliberately named, not folded into idle — those days may be
+    // downtime rather than absence, and nothing should score them.
+    const parts = [`${seen.active} worked`];
+    if (seen.idle > 0) parts.push(`${seen.idle} quiet`);
+    if (seen.unknown > 0) parts.push(`${seen.unknown} unrecorded`);
+    lines.push(`Last ${seen.window} days: ${parts.join(' · ')}`);
+  }
 
   if (skills.length > 0) {
     const used = skills.filter((s) => s.uses > 0).length;

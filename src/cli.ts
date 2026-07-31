@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { backfillFromTranscripts, TRANSCRIPT_ROOT } from './backfill.js';
 import { CLAUDE_JSON, FIORA_DB, importFromFiora, rescueOriginal } from './import.js';
 import { statePath } from './state.js';
 import { PERSONALITY_IDS } from './types.js';
@@ -12,6 +13,37 @@ function flag(name: string): string | undefined {
 function main(): void {
   const cmd = process.argv[2];
 
+  if (cmd === 'backfill') {
+    const tolerance = Number(flag('tolerance') ?? 120);
+    const r = backfillFromTranscripts({
+      root: flag('from'),
+      toleranceMs: Math.max(1, tolerance) * 1000,
+      dryRun: process.argv.includes('--dry-run'),
+    });
+    process.stdout.write(
+      [
+        r.dryRun ? 'Backfill (dry run — nothing written)' : 'Backfill complete',
+        '',
+        `  transcript observations  ${r.transcriptObservations}`,
+        `  generic events           ${r.candidateEvents}`,
+        `  matched within ${tolerance}s${' '.repeat(Math.max(1, 10 - String(tolerance).length))}${r.matched}`,
+        r.dryRun ? '' : `  events relabelled        ${r.updated}`,
+        `  still generic            ${r.stillGeneric}  (no surviving transcript)`,
+        '',
+        'Recovered kinds:',
+        ...Object.entries(r.kinds)
+          .sort((a, b) => b[1] - a[1])
+          .map(([k, n]) => `  ${String(n).padStart(4)}  ${k}`),
+        '',
+        'XP is left exactly as awarded — only the labels are restored.',
+        '',
+      ]
+        .filter((l) => l !== '')
+        .join('\n') + '\n',
+    );
+    return;
+  }
+
   if (cmd !== 'import' && cmd !== 'rescue') {
     process.stdout.write(
       [
@@ -21,6 +53,13 @@ function main(): void {
         '  buddy-import import [--from <path>] [--personality <id>] [--force]',
         '  buddy-import rescue [--identity <path>] [--events <path|none>]',
         '                      [--personality <id>] [--force]',
+        '  buddy-import backfill [--dry-run] [--tolerance <seconds>] [--from <dir>]',
+        '',
+        'backfill Recover real task descriptions for imported history by',
+        "         matching Claude Code's transcripts to stored events by time.",
+        `  --from         transcript root (default: ${TRANSCRIPT_ROOT})`,
+        '  --tolerance    match window in seconds (default: 120)',
+        '  --dry-run      report what would change, write nothing',
         '',
         'import   Move a @fiorastudio/buddy companion in.',
         `  --from         source database (default: ${FIORA_DB})`,

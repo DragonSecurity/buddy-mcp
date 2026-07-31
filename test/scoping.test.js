@@ -257,10 +257,10 @@ describe('migration and milestone integrity', () => {
     const row = reopened.prepare("SELECT uses, project_root FROM skills WHERE name = 'keeper'").get();
     assert.equal(row.uses, 3, 'data survived the rebuild');
     assert.equal(row.project_root, '');
-    assert.equal(
-      Number(reopened.prepare('PRAGMA user_version').get().user_version),
-      4,
-      'schema version advanced',
+    // Not pinned to a literal: this must keep passing as new migrations land.
+    assert.ok(
+      Number(reopened.prepare('PRAGMA user_version').get().user_version) >= 4,
+      'schema version advanced past the rebuild',
     );
   });
 });
