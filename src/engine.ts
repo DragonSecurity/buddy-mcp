@@ -67,11 +67,57 @@ const KIND_PATTERNS: [ObservationKind, RegExp][] = [
   ],
 ];
 
+/**
+ * Words that only ever appear as proof that work was checked, never as the
+ * work itself. Summaries habitually end "…, tests pass, vet clean" or carry a
+ * "(tests pass)" aside; matching those made almost every task look like
+ * test-writing.
+ */
+const VERIFICATION =
+  /\b(?:tests?|vet|build|lint|ci|checks?|suite)\s*(?:\/\s*\w+\s*)*(?:pass\w*|green|clean|ok)\b|\b(?:verified|confirmed|validated|all green)\b/i;
+
+/**
+ * The leading clause, which carries the main verb. "Fixed two scenario bugs:
+ * wired debt rules…" is a bugfix, however much the detail after the colon
+ * happens to mention tests.
+ */
+export function primaryClause(summary: string): string {
+  // Parentheticals are asides. Keep substantive ones, drop pure verification.
+  const withoutAsides = summary.replace(/\(([^)]*)\)/g, (whole, inner: string) =>
+    VERIFICATION.test(inner) ? ' ' : ` ${inner} `,
+  );
+
+  // Trailing verification clauses carry no information about what was done.
+  const trimmed = withoutAsides.replace(
+    /[,;—-]\s*(?:and\s+)?[^,;—]*?(?:tests?|vet|build|lint|ci)\s*(?:\/\s*\w+\s*)*(?:pass\w*|green|clean)\b[^,;—]*/gi,
+    ' ',
+  );
+
+  const boundary = trimmed.search(/[:;—]/);
+  const head = boundary > 8 ? trimmed.slice(0, boundary) : trimmed;
+  return head.trim() || summary;
+}
+
+function countMatches(text: string, re: RegExp): number {
+  const m = text.match(new RegExp(re.source, 'gi'));
+  return m ? m.length : 0;
+}
+
+/** Evidence in the leading clause counts for far more than an incidental mention. */
+const HEAD_WEIGHT = 4;
+
 export function classify(summary: string): ObservationKind {
+  const cleaned = primaryClause(summary);
+  const rest = summary;
+
+  let best: { kind: ObservationKind; score: number } | null = null;
   for (const [kind, re] of KIND_PATTERNS) {
-    if (re.test(summary)) return kind;
+    const score = HEAD_WEIGHT * countMatches(cleaned, re) + countMatches(rest, re);
+    // Strictly greater keeps KIND_PATTERNS order as the tie-break, so the more
+    // specific kind still wins when the evidence is balanced.
+    if (score > 0 && (!best || score > best.score)) best = { kind, score };
   }
-  return 'other';
+  return best ? best.kind : 'other';
 }
 
 const clamp = (n: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, n));

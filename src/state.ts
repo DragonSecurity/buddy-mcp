@@ -195,12 +195,23 @@ export function save(state: BuddyState): void {
  * in-memory array is the source of truth and never exceeds a few dozen rows.
  */
 function syncMilestones(db: DatabaseSync, milestones: Milestone[]): void {
-  const existing = db.prepare('SELECT count(*) AS n FROM milestones').get() as { n: number };
-  if (Number(existing.n) === milestones.length) return;
+  // Compared by content, not by count. Short-circuiting on COUNT(*) meant any
+  // edit that preserved the number of rows — renaming one, or replacing the
+  // oldest once the cap is reached — was silently never persisted.
+  const existing = db.prepare('SELECT at, text FROM milestones ORDER BY at ASC, id ASC').all() as unknown as {
+    at: number;
+    text: string;
+  }[];
+
+  const wanted = milestones.map((m) => ({ at: ms(m.at, Date.now()), text: m.text }));
+  const same =
+    existing.length === wanted.length &&
+    existing.every((e, i) => e.at === wanted[i]!.at && e.text === wanted[i]!.text);
+  if (same) return;
 
   db.exec('DELETE FROM milestones');
   const insert = db.prepare('INSERT INTO milestones (at, text) VALUES (?, ?)');
-  for (const m of milestones) insert.run(ms(m.at, Date.now()), m.text);
+  for (const m of wanted) insert.run(m.at, m.text);
 }
 
 /** Append-only history. This is what per-skill and per-kind stats are built on. */

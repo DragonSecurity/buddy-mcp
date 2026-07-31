@@ -52,16 +52,33 @@ function userVersion(db: DatabaseSync): number {
   return Number(row?.user_version ?? 0);
 }
 
+/**
+ * All steps run inside one transaction. SQLite DDL is transactional, so a
+ * crash mid-migration rolls back rather than leaving a half-applied schema —
+ * which previously could not be re-applied (migrateV3 rebuilds a table, so a
+ * second attempt hit "table skills_v3 already exists"), and a throw here makes
+ * load() quarantine the database and hatch a replacement buddy.
+ */
 function migrate(db: DatabaseSync): void {
   const from = userVersion(db);
   if (from >= SCHEMA_VERSION) return;
 
-  if (from < 1) migrateV1(db);
-  if (from < 2) migrateV2(db);
-  if (from < 3) migrateV3(db);
-  if (from < 4) migrateV4(db);
-
-  db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    if (from < 1) migrateV1(db);
+    if (from < 2) migrateV2(db);
+    if (from < 3) migrateV3(db);
+    if (from < 4) migrateV4(db);
+    db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
+    db.exec('COMMIT');
+  } catch (err) {
+    try {
+      db.exec('ROLLBACK');
+    } catch {
+      /* nothing to roll back */
+    }
+    throw err;
+  }
 }
 
 function migrateV1(db: DatabaseSync): void {
@@ -158,6 +175,8 @@ function migrateV3(db: DatabaseSync): void {
   if (columns.some((c) => c.name === 'project_root')) return;
 
   db.exec(`
+    DROP TABLE IF EXISTS skills_v3;
+
     CREATE TABLE skills_v3 (
       name         TEXT    NOT NULL,
       project_root TEXT    NOT NULL DEFAULT '',

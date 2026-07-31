@@ -255,3 +255,28 @@ describe('persistence', () => {
     assert.ok(['snarky', 'cheerful', 'stoic', 'gremlin', 'zen'].includes(state.personality));
   });
 });
+
+describe('milestone persistence', () => {
+  it('persists an edit that keeps the row count the same', () => {
+    resetDb();
+    const { state } = load(T0);
+    state.milestones = [
+      { at: T0.toISOString(), text: 'First.' },
+      { at: T0.toISOString(), text: 'Second.' },
+    ];
+    save(state);
+    assert.deepEqual(load(T0).state.milestones.map((m) => m.text), ['First.', 'Second.']);
+
+    // Same count, different content — the old COUNT(*) short-circuit dropped this.
+    state.milestones = [
+      { at: T0.toISOString(), text: 'First.' },
+      { at: T0.toISOString(), text: 'Renamed.' },
+    ];
+    save(state);
+    assert.deepEqual(
+      load(T0).state.milestones.map((m) => m.text),
+      ['First.', 'Renamed.'],
+      'a same-length change must still persist',
+    );
+  });
+});

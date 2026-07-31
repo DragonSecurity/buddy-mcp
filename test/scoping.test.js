@@ -234,3 +234,33 @@ describe('availability reconciliation', () => {
     assert.ok(names(skillStats(repoB)).includes('beta-only'), 'available again');
   });
 });
+
+describe('migration and milestone integrity', () => {
+  it('rolls back a failed migration instead of half-applying it', () => {
+    reset();
+    const db = getDb();
+    // Simulate the pre-v3 shape, then corrupt the step so migrateV3 must fail.
+    db.exec('DROP TABLE skills');
+    db.exec(`CREATE TABLE skills (
+      name TEXT PRIMARY KEY, source TEXT NOT NULL, description TEXT NOT NULL DEFAULT '',
+      first_seen INTEGER NOT NULL, uses INTEGER NOT NULL DEFAULT 0, last_used_at INTEGER
+    )`);
+    db.exec("INSERT INTO skills (name, source, first_seen, uses) VALUES ('keeper', 'personal', 1, 3)");
+    // A leftover from a previously-interrupted run must not wedge the migration.
+    db.exec('CREATE TABLE skills_v3 (bogus TEXT)');
+    db.exec('PRAGMA user_version = 2');
+    closeDb();
+
+    // Re-opening must complete cleanly rather than throwing (which would make
+    // load() quarantine the database and hatch a replacement buddy).
+    const reopened = getDb();
+    const row = reopened.prepare("SELECT uses, project_root FROM skills WHERE name = 'keeper'").get();
+    assert.equal(row.uses, 3, 'data survived the rebuild');
+    assert.equal(row.project_root, '');
+    assert.equal(
+      Number(reopened.prepare('PRAGMA user_version').get().user_version),
+      4,
+      'schema version advanced',
+    );
+  });
+});
