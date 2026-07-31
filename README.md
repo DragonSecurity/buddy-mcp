@@ -63,6 +63,24 @@ use:
 - your personal skills — `~/.claude/skills/*/SKILL.md`
 - the current project — `./.claude/skills/*/SKILL.md`
 
+Two rules keep the list honest.
+
+**Only invokable skills are advised.** A plugin can sit in the cache without
+being listed in `installed_plugins.json`; its skills exist on disk but Claude
+Code's `Skill` tool refuses to load them. Recommending one is a dead end, so
+they're excluded — and `buddy_skills` names the plugin so you can fix the
+install rather than wonder why the skill vanished.
+
+**Project skills are scoped to their project.** Plugin and personal skills are
+global; `./.claude/skills` belongs to one repo. Skills are keyed by
+`(name, project_root)`, so two repos can each define a `deploy` skill without
+one shadowing the other, and neither is listed, suggested or advised in the
+other. A skill named only via `skills_used` is registered globally — there's no
+evidence it belongs to any particular repo.
+
+A skill that stops being discoverable is flagged unavailable rather than
+deleted, so its usage counters survive an uninstall/reinstall cycle.
+
 When a task matches a skill you've never used, the buddy says so:
 
 ```
@@ -207,5 +225,5 @@ from it — stages here are level-based anyway.
 
 ```sh
 npm run build
-npm test     # 95 tests: engine, storage, skills, advice, import, rescue, end-to-end MCP
+npm test     # 110 tests: engine, storage, skills, scoping, advice, import, rescue, end-to-end MCP
 ```

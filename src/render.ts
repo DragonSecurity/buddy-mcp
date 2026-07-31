@@ -128,7 +128,11 @@ export function renderAffinity(byKind: Record<string, SkillAffinity[]>): string 
   return lines.join('\n');
 }
 
-export function renderSkills(stats: SkillStat[], byKind: Record<string, SkillAffinity[]> = {}): string {
+export function renderSkills(
+  stats: SkillStat[],
+  byKind: Record<string, SkillAffinity[]> = {},
+  uninstalled: string[] = [],
+): string {
   if (stats.length === 0) {
     return 'No skills discovered yet. Install a plugin or add `.claude/skills/` to this project.';
   }
@@ -149,6 +153,13 @@ export function renderSkills(stats: SkillStat[], byKind: Record<string, SkillAff
 
   if (unused.length) {
     out.push('', `Never used (${unused.length}): ${unused.map((s) => s.name).join(', ')}`);
+  }
+  if (uninstalled.length) {
+    out.push(
+      '',
+      `⚠️  Cached but not installed, so Claude Code cannot invoke them: ${uninstalled.join(', ')}.`,
+      `   They are excluded from advice. Add them to installed_plugins.json to use them.`,
+    );
   }
   return out.join('\n');
 }

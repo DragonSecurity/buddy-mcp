@@ -13,6 +13,7 @@ import {
   skillStats,
   suggestSkill,
   syncSkills,
+  uninstalledPlugins,
 } from './skills.js';
 import { load, recordEvent, save, statePath } from './state.js';
 import { OBSERVATION_KINDS } from './types.js';
@@ -137,12 +138,14 @@ server.registerTool(
   async () => {
     const stats = refreshSkills(new Date());
     let byKind = {};
+    let stranded: string[] = [];
     try {
       byKind = affinityByKind();
+      stranded = uninstalledPlugins();
     } catch {
-      /* affinity is a nicety; never break the listing */
+      /* both are niceties; never break the listing */
     }
-    return text(renderSkills(stats, byKind));
+    return text(renderSkills(stats, byKind, stranded));
   },
 );
 

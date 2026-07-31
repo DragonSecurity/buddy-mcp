@@ -15,7 +15,7 @@ export function dbPath(): string {
   return join(stateDir(), 'buddy.db');
 }
 
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 4;
 
 let handle: DatabaseSync | null = null;
 let handlePath = '';
@@ -58,6 +58,8 @@ function migrate(db: DatabaseSync): void {
 
   if (from < 1) migrateV1(db);
   if (from < 2) migrateV2(db);
+  if (from < 3) migrateV3(db);
+  if (from < 4) migrateV4(db);
 
   db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
 }
@@ -136,5 +138,56 @@ function migrateV2(db: DatabaseSync): void {
   const columns = db.prepare('PRAGMA table_info(buddy)').all() as { name: string }[];
   if (!columns.some((c) => c.name === 'bio')) {
     db.exec(`ALTER TABLE buddy ADD COLUMN bio TEXT NOT NULL DEFAULT ''`);
+  }
+}
+
+/**
+ * Scopes project-local skills to the project they were found in.
+ *
+ * Plugin and personal skills are genuinely global and keep project_root = ''.
+ * A skill from ./.claude/skills belongs to one repo only — without this it
+ * would be listed, suggested and advised in every other repo too.
+ *
+ * The key becomes (name, project_root) so two repos can each define a skill of
+ * the same name without one silently shadowing the other. Requires a table
+ * rebuild; `uses` and `last_used_at` are the only real data here and are
+ * carried across, with existing rows treated as global.
+ */
+function migrateV3(db: DatabaseSync): void {
+  const columns = db.prepare('PRAGMA table_info(skills)').all() as { name: string }[];
+  if (columns.some((c) => c.name === 'project_root')) return;
+
+  db.exec(`
+    CREATE TABLE skills_v3 (
+      name         TEXT    NOT NULL,
+      project_root TEXT    NOT NULL DEFAULT '',
+      source       TEXT    NOT NULL,
+      description  TEXT    NOT NULL DEFAULT '',
+      first_seen   INTEGER NOT NULL,
+      uses         INTEGER NOT NULL DEFAULT 0,
+      last_used_at INTEGER,
+      PRIMARY KEY (name, project_root)
+    );
+
+    INSERT INTO skills_v3 (name, project_root, source, description, first_seen, uses, last_used_at)
+      SELECT name, '', source, description, first_seen, uses, last_used_at FROM skills;
+
+    DROP TABLE skills;
+    ALTER TABLE skills_v3 RENAME TO skills;
+  `);
+}
+
+/**
+ * Marks whether a skill is still on disk and invokable.
+ *
+ * Discovery only ever upserted, so a skill that was uninstalled — or that
+ * turned out never to have been installed — stayed in the registry forever and
+ * kept being recommended. Flagging rather than deleting keeps usage counters
+ * intact across an uninstall/reinstall cycle.
+ */
+function migrateV4(db: DatabaseSync): void {
+  const columns = db.prepare('PRAGMA table_info(skills)').all() as { name: string }[];
+  if (!columns.some((c) => c.name === 'available')) {
+    db.exec('ALTER TABLE skills ADD COLUMN available INTEGER NOT NULL DEFAULT 1');
   }
 }
