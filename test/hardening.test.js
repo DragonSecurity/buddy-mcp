@@ -258,3 +258,48 @@ describe('v6 reprices imported history (F-econ)', async () => {
     process.env.BUDDY_HOME = buddyHome;
   });
 });
+
+describe('v7 discards energy from the retired model', async () => {
+  const { closeDb: close } = await import('../dist/db.js');
+
+  it('resets a stale energy value without touching progress', () => {
+    close();
+    const dir = join(buddyHome, 'v7');
+    const { DatabaseSync } = require('node:sqlite');
+    mkdirSync(dir, { recursive: true });
+    const raw = new DatabaseSync(join(dir, 'buddy.db'));
+    raw.exec(`
+      CREATE TABLE buddy (id INTEGER PRIMARY KEY CHECK (id=1), name TEXT NOT NULL,
+        personality TEXT NOT NULL, born_at INTEGER NOT NULL, level INTEGER NOT NULL DEFAULT 1,
+        xp INTEGER NOT NULL DEFAULT 0, total_xp INTEGER NOT NULL DEFAULT 0,
+        energy REAL NOT NULL DEFAULT 100, streak INTEGER NOT NULL DEFAULT 1,
+        longest_streak INTEGER NOT NULL DEFAULT 1, last_seen_at INTEGER NOT NULL,
+        last_seen_day TEXT NOT NULL, last_observed_day TEXT NOT NULL DEFAULT '',
+        last_reaction TEXT NOT NULL DEFAULT '', imported_from TEXT, bio TEXT NOT NULL DEFAULT '');
+      CREATE TABLE events (id INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER NOT NULL,
+        kind TEXT NOT NULL, xp INTEGER NOT NULL DEFAULT 0, summary TEXT NOT NULL DEFAULT '');
+      CREATE TABLE milestones (id INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER NOT NULL, text TEXT NOT NULL);
+      CREATE TABLE skills (name TEXT NOT NULL, project_root TEXT NOT NULL DEFAULT '', source TEXT NOT NULL,
+        description TEXT NOT NULL DEFAULT '', first_seen INTEGER NOT NULL, uses INTEGER NOT NULL DEFAULT 0,
+        last_used_at INTEGER, available INTEGER NOT NULL DEFAULT 1, PRIMARY KEY (name, project_root));
+      CREATE TABLE skill_uses (id INTEGER PRIMARY KEY AUTOINCREMENT, skill TEXT NOT NULL, at INTEGER NOT NULL, kind TEXT NOT NULL DEFAULT '');
+      CREATE TABLE nudges (skill TEXT PRIMARY KEY, count INTEGER NOT NULL DEFAULT 0, at INTEGER NOT NULL);
+      CREATE TABLE heartbeats (day TEXT PRIMARY KEY, first_at INTEGER NOT NULL, last_at INTEGER NOT NULL,
+        beats INTEGER NOT NULL DEFAULT 1, source TEXT NOT NULL DEFAULT 'live');
+      PRAGMA user_version = 6;
+    `);
+    raw.prepare(`INSERT INTO buddy (id,name,personality,born_at,level,xp,total_xp,energy,streak,longest_streak,last_seen_at,last_seen_day)
+                 VALUES (1,'T','gremlin',1,14,1295,14295,1,3,12,1,'2026-08-01')`).run();
+    raw.close();
+
+    process.env.BUDDY_HOME = dir;
+    const b = getDb().prepare('SELECT energy, level, xp, total_xp, streak FROM buddy WHERE id=1').get();
+    assert.equal(b.energy, 100, 'stale energy from the old model is discarded');
+    assert.equal(b.level, 14, 'level untouched');
+    assert.equal(b.xp, 1295, 'progress untouched');
+    assert.equal(b.total_xp, 14295, 'lifetime xp untouched');
+    assert.equal(b.streak, 3, 'streak untouched');
+    close();
+    process.env.BUDDY_HOME = buddyHome;
+  });
+});
