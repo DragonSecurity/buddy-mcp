@@ -1,0 +1,59 @@
+{
+  "_comment": "Written by dragon-dev-buddy:buddy-setup. Every skill in the pack reads this file.",
+  "version": 1,
+  "project": {
+    "name": "buddy-mcp",
+    "what_it_is": "A persistent coding companion for Claude Code served over MCP: hatches a buddy, grants XP as work is observed, and learns which of the user's skills fit which kind of task.",
+    "primary_language": "TypeScript",
+    "stack": "TypeScript (ESM, NodeNext, strict + noUncheckedIndexedAccess) on Node >=24. @modelcontextprotocol/sdk over stdio transport, zod for tool-argument validation, node:sqlite for persistence. No framework, no HTTP server. Two runtime dependencies.",
+    "runtime": "Node.js 24 and 26 (node:sqlite is unflagged from Node 24 onwards)",
+    "deploy_target": "Local stdio subprocess launched by an MCP client. Packaged for npm (bin: buddy-mcp, buddy-import; files: dist) but not yet published.",
+    "data_store": "SQLite at $BUDDY_HOME, defaulting to ~/.buddy-mcp. Deliberately not ~/.buddy, which belongs to @fiorastudio/buddy."
+  },
+  "security": {
+    "exposure": "public",
+    "_exposure_note": "Public source repository, not yet published to npm. The process itself is never network-reachable: no fetch, no node:http(s), no node:net, no child_process anywhere in src/. Exposure is a distribution and supply-chain property here, not a network one. Revisit the moment an npm release happens, at which point every installer runs this against their own transcripts.",
+    "data_sensitivity": "credentials",
+    "_data_sensitivity_note": "The server reads ~/.claude/projects/**/*.jsonl (raw Claude Code transcripts), ~/.claude.json and ~/.buddy/buddy.db. Transcript content is arbitrary and may contain API keys, tokens or customer data pasted into a session. Derived text is persisted indefinitely to the SQLite DB. No egress is possible, which caps exploitability but not the class. Critically, this material never touches the git repository, so repository-level secret scanning is not a control that covers it.",
+    "compliance": [],
+    "auth_model": "None. Runs as a stdio subprocess under the invoking user's identity and inherits their filesystem trust. Tool arguments are the only external input surface and are validated with zod.",
+    "trust_boundaries": [
+      "MCP client -> server (stdio): tool arguments (summary, task, name, skills_used) are model-generated text crossing into the server. zod-validated with length and enum constraints.",
+      "~/.claude/projects/**/*.jsonl -> src/backfill.ts: untrusted, arbitrary-content transcript files parsed from disk and turned into persisted state.",
+      "~/.claude.json and ~/.buddy/buddy.db -> src/import.ts: third-party data (Anthropic's /buddy and @fiorastudio/buddy) read and imported into this server's own store.",
+      "Plugin, personal and project skill directories -> src/skills.ts: SKILL.md content authored by third parties, read from paths the server does not control.",
+      "npm registry -> installers: dormant until first publish, then the primary boundary. dist/ is the shipped artifact and is built by tsc in CI."
+    ],
+    "known_risk_areas": [
+      "Transcript ingestion (src/backfill.ts): parses arbitrary JSONL from ~/.claude/projects and derives persisted text from it. Untrusted input, indefinite retention, and outside the boundary any repository secret scanner covers.",
+      "Skill discovery and path handling (src/skills.ts): reads SKILL.md from plugin, personal and project directories -- paths the server does not control, with third-party plugin content among them. Skills are keyed by (name, project_root), so path derivation is also a correctness boundary between repos."
+    ]
+  },
+  "engagement": {
+    "_comment": "Empty by design: internal work on the author's own code, no offensive engagement. vuln-triage will not emit proof-of-concept exploit code and pentest-report will not produce a client deliverable while this block is empty.",
+    "authorized_scope": [],
+    "out_of_scope": [],
+    "authorization_reference": ""
+  },
+  "practice": {
+    "test_command": "npm test",
+    "_test_note": "node --test test/*.test.js, running against dist/. npm run build must precede it.",
+    "build_command": "npm run build",
+    "lint_command": "",
+    "_lint_note": "No linter configured. tsc strict with noUncheckedIndexedAccess is the only static gate.",
+    "ci": "GitHub Actions (.github/workflows/ci.yml): build and test on Node 24 and 26, on pull_request and on push to main and renovate/**.",
+    "sca_tool": "Renovate (.github/renovate.json, org preset, automergeType branch)",
+    "sast_tool": "",
+    "secret_scanner": "",
+    "_tooling_note": "No SAST and no secret scanner configured in this repo. The author's dragon-dev-buddy skills pack is the compensating control for keeping credentials out of git; note that it does not cover the ~/.buddy-mcp datastore."
+  },
+  "buddy": {
+    "name": "Emberchaos",
+    "personality": "gremlin",
+    "report_after_tasks": true
+  },
+  "output": {
+    "reports_dir": ".dragon-buddy/reports"
+  },
+  "skill_level": "advanced"
+}

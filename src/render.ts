@@ -139,10 +139,22 @@ export function renderAffinity(byKind: Record<string, SkillAffinity[]>): string 
   return lines.join('\n');
 }
 
+/**
+ * Names are clamped at parse time, but rows written by an earlier version are
+ * still in the registry. Capping the column here means one oversized legacy row
+ * cannot pad every other row out to its length — the cost of a long name has to
+ * stay linear in that one name, never multiplied by the size of the table.
+ */
+const MAX_NAME_COLUMN = 40;
+
+/** How many not-installed plugins to name before summarising the rest. */
+const MAX_UNINSTALLED_LISTED = 10;
+
 export function renderSkills(
   stats: SkillStat[],
   byKind: Record<string, SkillAffinity[]> = {},
   uninstalled: string[] = [],
+  manifestReadable = true,
 ): string {
   if (stats.length === 0) {
     return 'No skills discovered yet. Install a plugin or add `.claude/skills/` to this project.';
@@ -150,7 +162,7 @@ export function renderSkills(
 
   const used = stats.filter((s) => s.uses > 0);
   const unused = stats.filter((s) => s.uses === 0);
-  const width = Math.max(...stats.map((s) => s.name.length));
+  const width = Math.min(MAX_NAME_COLUMN, Math.max(...stats.map((s) => s.name.length)));
   const top = Math.max(1, ...stats.map((s) => s.uses));
 
   const line = (s: SkillStat) =>
@@ -166,10 +178,24 @@ export function renderSkills(
     out.push('', `Never used (${unused.length}): ${unused.map((s) => s.name).join(', ')}`);
   }
   if (uninstalled.length) {
+    const shown = uninstalled.slice(0, MAX_UNINSTALLED_LISTED);
+    const rest = uninstalled.length - shown.length;
     out.push(
       '',
-      `⚠️  Cached but not installed, so Claude Code cannot invoke them: ${uninstalled.join(', ')}.`,
+      `⚠️  Cached but not installed, so Claude Code cannot invoke them: ${shown.join(', ')}${
+        rest > 0 ? `, and ${rest} more` : ''
+      }.`,
       `   They are excluded from advice. Add them to installed_plugins.json to use them.`,
+    );
+  }
+  // Say this out loud. Failing closed without reporting it would trade silently
+  // trusting too much for silently showing too little — the user would see a
+  // shorter list and have no way to know why.
+  if (!manifestReadable) {
+    out.push(
+      '',
+      `⚠️  Plugin manifest unreadable — plugin skills are excluded from discovery and advice.`,
+      `   Check ~/.claude/plugins/installed_plugins.json. Personal and project skills are unaffected.`,
     );
   }
   return out.join('\n');

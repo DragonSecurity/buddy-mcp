@@ -1,4 +1,4 @@
-import { readFileSync, readdirSync } from 'node:fs';
+import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
@@ -23,6 +23,9 @@ export const TRANSCRIPT_ROOT = join(homedir(), '.claude', 'projects');
 
 /** How far apart a transcript entry and a stored event may be and still match. */
 export const DEFAULT_TOLERANCE_MS = 120_000;
+
+/** Largest transcript this will read whole. Well above any real session. */
+export const MAX_TRANSCRIPT_BYTES = 50 * 1024 * 1024;
 
 export interface TranscriptObservation {
   at: number;
@@ -49,6 +52,9 @@ export function readTranscriptObservations(root: string = TRANSCRIPT_ROOT): Tran
 
       let text: string;
       try {
+        // Whole-file read, so an outsized transcript would be held in memory in
+        // full. Nothing useful lives past this bound; skipping beats an OOM.
+        if (statSync(p).size > MAX_TRANSCRIPT_BYTES) continue;
         text = readFileSync(p, 'utf8');
       } catch {
         continue;
