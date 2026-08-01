@@ -11,8 +11,19 @@ before(() => {
 });
 after(() => rmSync(home, { recursive: true, force: true }));
 
-const { classify, observe, stageFor, xpForLevel, touchStreak, applyIdle, moodScore, moodTier } =
-  await import('../dist/engine.js');
+const {
+  classify,
+  observe,
+  stageFor,
+  xpForLevel,
+  touchStreak,
+  applyIdle,
+  moodScore,
+  moodTier,
+  SESSION_GAP_HOURS,
+  LOW_ENERGY,
+  REGEN_PER_HOUR,
+} = await import('../dist/engine.js');
 const { hatch, load, save, statePath, stateDir, localDay, closeDb, recordEvent } =
   await import('../dist/state.js');
 const { getDb } = await import('../dist/db.js');
@@ -54,7 +65,10 @@ describe('progression', () => {
     assert.equal(stageFor(4).id, 'hatchling');
     assert.equal(stageFor(5).id, 'whelp');
     assert.equal(stageFor(10).id, 'dragon');
-    assert.equal(stageFor(999).id, 'ascendant');
+    assert.equal(stageFor(35).id, 'ascendant');
+    assert.equal(stageFor(45).id, 'astral');
+    assert.equal(stageFor(54).id, 'astral');
+    assert.equal(stageFor(999).id, 'eternal');
   });
 
   it('grants xp and evolves the egg on first level-up', () => {
@@ -163,6 +177,92 @@ describe('energy and mood', () => {
       const m = moodScore(s, hoursLater(T0, h));
       assert.ok(m >= 0 && m <= 100, `h=${h} m=${m}`);
     }
+  });
+});
+
+describe('energy is per-session', () => {
+  it('regenerates linearly inside a session', () => {
+    const s = hatch(T0);
+    s.energy = 40;
+    applyIdle(s, hoursLater(T0, 2)); // under the session boundary
+    assert.equal(s.energy, 40 + 2 * REGEN_PER_HOUR);
+  });
+
+  // Break-even is REGEN_PER_HOUR / 4. This pins the rate the tuning targets, so
+  // a future change to either constant has to be deliberate about the pacing.
+  it('sustains five observations an hour indefinitely', () => {
+    const s = hatch(T0);
+    let t = T0;
+    for (let i = 0; i < 200; i++) {
+      t = new Date(t.getTime() + 12 * 60_000); // 5/hour
+      applyIdle(s, t);
+      observe(s, 'Fixed a bug', t);
+    }
+    assert.ok(s.energy > LOW_ENERGY, `energy fell to ${s.energy} at the target rate`);
+  });
+
+  it('does not reach full from a short in-session gap', () => {
+    const s = hatch(T0);
+    s.energy = 10;
+    applyIdle(s, hoursLater(T0, SESSION_GAP_HOURS - 1));
+    assert.ok(s.energy < 100, `expected a partial recovery, got ${s.energy}`);
+  });
+
+  // The deficit used to carry: end a long session at 0%, come back three hours
+  // later and start the next one at 30% having done nothing wrong. Energy is a
+  // within-session measure, so a gap this long starts over.
+  it('starts a new session at full after a long gap', () => {
+    const s = hatch(T0);
+    s.energy = 0;
+    applyIdle(s, hoursLater(T0, SESSION_GAP_HOURS));
+    assert.equal(s.energy, 100);
+  });
+
+  it('starts the next morning at full however drained the night before', () => {
+    const s = hatch(T0);
+    s.energy = 3;
+    applyIdle(s, hoursLater(T0, 10));
+    assert.equal(s.energy, 100);
+  });
+});
+
+describe('mood and energy never contradict each other', () => {
+  // The exact card that prompted this: 15% energy on a 3-day streak scored
+  // 100 -> "radiant / feral with joy", printed directly above a reaction line
+  // drawn from the tired pool.
+  it('does not read radiant while the buddy is too tired to perform', () => {
+    const s = hatch(T0);
+    s.streak = 3;
+    s.energy = 15;
+    const score = moodScore(s, T0);
+    assert.equal(score, 100, 'the score itself is still high — that is not the bug');
+    assert.notEqual(moodTier(score, s.energy), 'radiant');
+  });
+
+  it('agrees with tiredOut at the boundary', () => {
+    const s = hatch(T0);
+    s.streak = 3;
+    // Just tired: capped. Just not tired: free to be radiant.
+    assert.notEqual(moodTier(moodScore(s, T0), LOW_ENERGY - 1), 'radiant');
+    assert.equal(moodTier(moodScore(s, T0), LOW_ENERGY), 'radiant');
+  });
+
+  it('caps harder when running on empty', () => {
+    const s = hatch(T0);
+    s.streak = 3;
+    const tier = moodTier(moodScore(s, T0), 2);
+    assert.ok(['low', 'bad'].includes(tier), `got ${tier}`);
+  });
+
+  it('leaves a rested buddy alone', () => {
+    const s = hatch(T0);
+    s.streak = 5;
+    assert.equal(moodTier(moodScore(s, T0), 100), 'radiant');
+  });
+
+  it('never raises a bad mood just because energy is high', () => {
+    const s = hatch(T0);
+    assert.equal(moodTier(moodScore(s, hoursLater(T0, 24 * 7)), 100), 'bad');
   });
 });
 
