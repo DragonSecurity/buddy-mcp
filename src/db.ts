@@ -15,7 +15,7 @@ export function dbPath(): string {
   return join(stateDir(), 'buddy.db');
 }
 
-const SCHEMA_VERSION = 5;
+const SCHEMA_VERSION = 6;
 
 let handle: DatabaseSync | null = null;
 let handlePath = '';
@@ -70,6 +70,7 @@ function migrate(db: DatabaseSync): void {
     if (from < 3) migrateV3(db);
     if (from < 4) migrateV4(db);
     if (from < 5) migrateV5(db);
+    if (from < 6) migrateV6(db);
     db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
     db.exec('COMMIT');
   } catch (err) {
@@ -226,6 +227,83 @@ function migrateV4(db: DatabaseSync): void {
  * Existing history is backfilled: a day that recorded an observation self
  * evidently had a working buddy.
  */
+/**
+ * Reprices imported history at this engine's rates.
+ *
+ * A rescued companion arrives with its previous host's XP values attached to
+ * every event. Those numbers meant something there and nothing here — this
+ * buddy's lifetime total was a blend of two economies, averaging 7.5 XP against
+ * an engine whose cheapest observation kind pays 14. The level was carried
+ * across verbatim at import, so it floated free of the XP entirely: a level 14
+ * buddy holding less earned XP than level 9 requires.
+ *
+ * Imported events are identifiable by timestamp. They keep their original dates,
+ * which necessarily precede the import itself, so anything older than the import
+ * milestone came from elsewhere. The transcript backfill already recovered the
+ * real `kind` for those it could match, and `kind` is what pricing needs.
+ *
+ * Every constant here is frozen deliberately. A migration describes the data at
+ * one moment; referencing the live curve or the live BASE_XP would mean this
+ * step produced different results depending on when it ran, which is the one
+ * thing a migration must never do.
+ */
+function migrateV6(db: DatabaseSync): void {
+  const BASE_XP: Record<string, number> = {
+    deploy: 30, feature: 26, bugfix: 24, test: 22,
+    refactor: 20, other: 18, docs: 16, config: 14,
+  };
+  const xpForLevel = (level: number) => 100 + 150 * Math.max(0, level - 1);
+  const cumulativeTo = (level: number) => {
+    let total = 0;
+    for (let l = 1; l < level; l++) total += xpForLevel(l);
+    return total;
+  };
+
+  const imported = db
+    .prepare(
+      `SELECT at FROM milestones
+        WHERE text LIKE 'Rescued%' OR text LIKE 'Imported%'
+        ORDER BY at DESC LIMIT 1`,
+    )
+    .get() as { at: number } | undefined;
+  // Nothing was ever imported, so every event was priced by this engine already.
+  if (!imported) return;
+
+  const before = db
+    .prepare("SELECT count(*) n, coalesce(sum(xp), 0) total FROM events WHERE kind != 'milestone'")
+    .get() as { n: number; total: number };
+
+  const reprice = db.prepare("UPDATE events SET xp = ? WHERE at < ? AND kind = ?");
+  for (const [kind, xp] of Object.entries(BASE_XP)) reprice.run(xp, imported.at, kind);
+
+  const after = db
+    .prepare("SELECT coalesce(sum(xp), 0) total FROM events WHERE kind != 'milestone'")
+    .get() as { total: number };
+  if (after.total === before.total) return;
+
+  const buddy = db.prepare('SELECT level FROM buddy WHERE id = 1').get() as
+    | { level: number }
+    | undefined;
+  if (!buddy) return;
+
+  // Levels may be owed once the history is worth what it should be. They are
+  // never taken back: the level was granted at import and removing it would
+  // punish the user for a correction they did not ask for and cannot see.
+  let level = Math.max(1, Math.floor(buddy.level));
+  while (after.total >= cumulativeTo(level + 1)) level++;
+  const progress = Math.max(0, Math.min(after.total - cumulativeTo(level), xpForLevel(level) - 1));
+
+  db.prepare('UPDATE buddy SET total_xp = ?, xp = ?, level = ? WHERE id = 1').run(
+    after.total,
+    progress,
+    level,
+  );
+  db.prepare('INSERT INTO milestones (at, text) VALUES (?, ?)').run(
+    Date.now(),
+    `History repriced at the current economy: ${before.total} → ${after.total} xp across ${before.n} events.`,
+  );
+}
+
 function migrateV5(db: DatabaseSync): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS heartbeats (
