@@ -1,0 +1,12 @@
+# Source is always diffable. Without this, git sniffs content and will silently
+# treat a file as binary if it finds a NUL in the first 8k — which src/skills.ts
+# did, because it used raw NUL bytes as a composite-key separator. The effect was
+# that `git diff` and GitHub review both rendered "Binary files differ" for the
+# file holding the plugin trust gate: changes to the highest-risk code in the
+# repo were invisible to review. The bytes are now written as \0 escapes, and
+# this makes the guarantee explicit rather than dependent on content sniffing.
+*.ts   text diff
+*.js   text diff
+*.json text diff
+*.md   text diff
+*.yml  text diff

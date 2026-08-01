@@ -9,6 +9,7 @@ import {
   advise,
   affinityByKind,
   discoverSkills,
+  pluginManifestReadable,
   recordSkillUses,
   skillStats,
   suggestSkill,
@@ -162,13 +163,16 @@ server.registerTool(
     const stats = refreshSkills(now);
     let byKind = {};
     let stranded: string[] = [];
+    // Assume readable on error: a warning we cannot substantiate is noise.
+    let manifestOk = true;
     try {
       byKind = affinityByKind();
       stranded = uninstalledPlugins();
+      manifestOk = pluginManifestReadable();
     } catch {
-      /* both are niceties; never break the listing */
+      /* all three are niceties; never break the listing */
     }
-    return text(renderSkills(stats, byKind, stranded));
+    return text(renderSkills(stats, byKind, stranded, manifestOk));
   },
 );
 

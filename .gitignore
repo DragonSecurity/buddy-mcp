@@ -2,3 +2,7 @@ node_modules/
 dist/
 *.tsbuildinfo
 .smoke.mjs
+
+# Local permission allowlist — machine-specific, and not something to hand a
+# cloner. .dragon-buddy/ stays tracked: it holds no secrets and the team wants it.
+.claude/settings.local.json

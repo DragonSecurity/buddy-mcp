@@ -11,6 +11,48 @@ import type { BuddyState, ObservationKind, PersonalityId } from './types.js';
 export const FIORA_DB = join(homedir(), '.buddy', 'buddy.db');
 export const CLAUDE_JSON = join(homedir(), '.claude.json');
 
+/**
+ * Identity fields render verbatim on every status card, so they are bounded
+ * where they enter rather than where they are drawn. `buddy_rename` already
+ * enforces 32 through zod; these import paths were the way around it.
+ */
+export const MAX_NAME = 32;
+export const MAX_BIO = 500;
+
+export function clampName(value: unknown, fallback: string): string {
+  const s = String(value ?? '').trim().slice(0, MAX_NAME);
+  return s || fallback;
+}
+
+export function clampBio(value: unknown): string {
+  return String(value ?? '').slice(0, MAX_BIO);
+}
+
+/**
+ * Runs a destructive rewrite as one unit.
+ *
+ * These paths delete the buddy, its events and its milestones before writing
+ * the replacement. Outside a transaction, a throw between the deletes and the
+ * write leaves nothing at all — and unlike a corrupt database, which `load()`
+ * quarantines by renaming, there would be nothing left to quarantine. Carrying
+ * a companion's history intact is the entire point of this file.
+ */
+function atomically<T>(db: ReturnType<typeof getDb>, fn: () => T): T {
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    const result = fn();
+    db.exec('COMMIT');
+    return result;
+  } catch (err) {
+    try {
+      db.exec('ROLLBACK');
+    } catch {
+      /* nothing to roll back */
+    }
+    throw err;
+  }
+}
+
 export interface OriginalBuddy {
   name: string;
   bio: string;
@@ -56,7 +98,9 @@ export function parseClaudeCompanion(jsonPath: string = CLAUDE_JSON): OriginalBu
       ? nested.hatchedAt
       : null;
 
-  return { name, bio, hatchedAt };
+  // Clamped at the parse boundary: ~/.claude.json is not written by this
+  // process, and both fields render on every status card.
+  return { name: clampName(name, name.slice(0, MAX_NAME)), bio: clampBio(bio), hatchedAt };
 }
 
 /**
@@ -250,17 +294,19 @@ export function rescueOriginal(opts: RescueOptions = {}): RescueResult {
     lastReaction: '',
   };
 
-  target.exec('DELETE FROM buddy');
-  target.exec('DELETE FROM events');
-  target.exec('DELETE FROM milestones');
-  save(state);
+  atomically(target, () => {
+    target.exec('DELETE FROM buddy');
+    target.exec('DELETE FROM events');
+    target.exec('DELETE FROM milestones');
+    save(state);
 
-  const insert = target.prepare('INSERT INTO events (at, kind, xp, summary) VALUES (?, ?, ?, ?)');
-  for (const e of events) insert.run(e.at, e.kind, e.xp, `imported: ${e.type}`);
+    const insert = target.prepare('INSERT INTO events (at, kind, xp, summary) VALUES (?, ?, ?, ?)');
+    for (const e of events) insert.run(e.at, e.kind, e.xp, `imported: ${e.type}`);
 
-  target
-    .prepare('UPDATE buddy SET imported_from = ? WHERE id = 1')
-    .run(eventsPath ? `${identityPath} + ${eventsPath}` : identityPath);
+    target
+      .prepare('UPDATE buddy SET imported_from = ? WHERE id = 1')
+      .run(eventsPath ? `${identityPath} + ${eventsPath}` : identityPath);
+  });
 
   return {
     name: state.name,
@@ -313,15 +359,18 @@ export function importFromFiora(opts: ImportOptions = {}): ImportResult {
 
   const personality =
     opts.personality || (PERSONALITY_IDS[Math.floor(Math.random() * PERSONALITY_IDS.length)] as PersonalityId);
-  const bio = String(companion.personality_bio ?? '');
+  // Both render verbatim on every status card, and both arrive from a database
+  // this process does not own. buddy_rename already bounds the name at 32 via
+  // zod; the import path was bypassing that entirely.
+  const bio = clampBio(companion.personality_bio);
 
   // Level is carried across verbatim; `xp` is progress toward the *next* level
   // under our curve, so it resets to 0. totalXp stays the lifetime figure.
   const state: BuddyState = {
     version: 1,
-    name: String(companion.name ?? 'Imported'),
+    name: clampName(companion.name, 'Imported'),
     personality,
-    bio: String(companion.personality_bio ?? ''),
+    bio,
     bornAt: new Date(bornAt).toISOString(),
     level: Math.max(1, Number(companion.level ?? 1)),
     xp: 0,
@@ -344,22 +393,24 @@ export function importFromFiora(opts: ImportOptions = {}): ImportResult {
     lastReaction: '',
   };
 
-  target.exec('DELETE FROM buddy');
-  target.exec('DELETE FROM events');
-  target.exec('DELETE FROM milestones');
-  save(state);
+  atomically(target, () => {
+    target.exec('DELETE FROM buddy');
+    target.exec('DELETE FROM events');
+    target.exec('DELETE FROM milestones');
+    save(state);
 
-  const insert = target.prepare('INSERT INTO events (at, kind, xp, summary) VALUES (?, ?, ?, ?)');
-  events.forEach((e, i) => {
-    insert.run(
-      stamps[i]!,
-      KIND_MAP[e.event_type] ?? 'other',
-      Number(e.xp_gained ?? 0),
-      `imported: ${e.event_type}`,
-    );
+    const insert = target.prepare('INSERT INTO events (at, kind, xp, summary) VALUES (?, ?, ?, ?)');
+    events.forEach((e, i) => {
+      insert.run(
+        stamps[i]!,
+        KIND_MAP[e.event_type] ?? 'other',
+        Number(e.xp_gained ?? 0),
+        `imported: ${e.event_type}`,
+      );
+    });
+
+    target.prepare('UPDATE buddy SET imported_from = ? WHERE id = 1').run(source);
   });
-
-  target.prepare('UPDATE buddy SET imported_from = ? WHERE id = 1').run(source);
 
   return {
     name: state.name,
