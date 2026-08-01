@@ -9,6 +9,15 @@ import type {
   Stage,
 } from './types.js';
 
+/**
+ * The stage ladder is the actual content; levels past its top are integers with
+ * nothing attached. Ascendant used to be the end at 35, which a heavy user
+ * reached inside a year — after that the buddy could still level but could never
+ * become anything again. Astral and Eternal extend the arc rather than merely
+ * delaying its exhaustion. Paced against the measured economy (22 xp per
+ * observation), Eternal is roughly four years of heavy use and over a decade of
+ * moderate use: rare enough to mean something, not so rare it is decorative.
+ */
 export const STAGES: Stage[] = [
   { id: 'egg', name: 'Egg', emoji: '🥚', minLevel: 1 },
   { id: 'hatchling', name: 'Hatchling', emoji: '🐣', minLevel: 2 },
@@ -16,6 +25,8 @@ export const STAGES: Stage[] = [
   { id: 'dragon', name: 'Dragon', emoji: '🐉', minLevel: 10 },
   { id: 'elder', name: 'Elder', emoji: '🐲', minLevel: 20 },
   { id: 'ascendant', name: 'Ascendant', emoji: '✨', minLevel: 35 },
+  { id: 'astral', name: 'Astral', emoji: '🌌', minLevel: 45 },
+  { id: 'eternal', name: 'Eternal', emoji: '🌟', minLevel: 55 },
 ];
 
 export function stageFor(level: number): Stage {
@@ -24,10 +35,22 @@ export function stageFor(level: number): Stage {
   return current;
 }
 
-/** Gentle at first, then a real climb: 100 XP to level 2, ~1050 to level 10. */
+/**
+ * Gentle at first, then a real climb: 100 XP to level 2, ~4300 to level 10.
+ *
+ * The quadratic term was 8, which was set before there was any measurement of
+ * what the engine actually pays out. At the observed 22 XP per observation that
+ * curve handed a heavy user the whole stage ladder inside four months — the
+ * pacing problem was never that levelling felt slow, it was that the content ran
+ * out. 40 puts Ascendant around a year of heavy use and three years of moderate
+ * use, with Astral and Eternal beyond it.
+ *
+ * Raising this only makes future levels dearer; `level` is stored, never derived
+ * from `totalXp`, so no existing progress is revalued or lost.
+ */
 export function xpForLevel(level: number): number {
   const n = Math.max(0, level - 1);
-  return 100 + 60 * n + 8 * n * n;
+  return 100 + 60 * n + 40 * n * n;
 }
 
 const BASE_XP: Record<ObservationKind, number> = {
@@ -128,13 +151,43 @@ export function hoursSince(iso: string, now: Date): number {
   return Math.max(0, (now.getTime() - then) / 3_600_000);
 }
 
+/** A gap this long or longer means the last session ended and a new one began. */
+export const SESSION_GAP_HOURS = 4;
+
+/**
+ * Energy regained per idle hour inside a session.
+ *
+ * At 10/hour against a cost of 4 per observation, break-even was 2.5
+ * observations an hour — well under the rate an agentic session actually
+ * produces, and well under the rate this server's own install instructions ask
+ * for ("after completing any coding task"). A ten-hour session at six an hour
+ * bottomed out halfway and spent its back half on generic tired lines. 20/hour
+ * puts break-even at five an hour. Regen is the lever rather than cost because
+ * cost feeds `energyMult`, and lowering it would inflate XP per observation on
+ * top of the pacing change.
+ */
+export const REGEN_PER_HOUR = 20;
+
 /**
  * Time-travel step applied before every tool call: the buddy rests while you're
  * away, and starts to feel neglected if you stay away too long.
+ *
+ * Energy is a *within-session* measure. A gap of SESSION_GAP_HOURS or more
+ * starts a fresh session at full, rather than trickling back at REGEN_PER_HOUR
+ * from wherever the last one ended. Linear accrual meant a session that ran long
+ * enough to bottom out handed its deficit to the next one: come back after three
+ * hours and you would start the day at 30%, having done nothing wrong. Energy
+ * then measured "how recently did you stop" rather than "how hard have you been
+ * going", which is the only thing it is useful for — and the only thing the
+ * status card claims it means.
  */
 export function applyIdle(state: BuddyState, now: Date): void {
   const idle = hoursSince(state.lastSeenAt, now);
-  state.energy = clamp(state.energy + idle * 10, 0, 100);
+  if (idle >= SESSION_GAP_HOURS) {
+    state.energy = 100;
+    return;
+  }
+  state.energy = clamp(state.energy + idle * REGEN_PER_HOUR, 0, 100);
 }
 
 export function moodScore(state: BuddyState, now: Date): number {
@@ -146,12 +199,31 @@ export function moodScore(state: BuddyState, now: Date): number {
   return clamp(100 - neglect + streakBonus - drained, 0, 100);
 }
 
-export function moodTier(score: number): MoodTier {
-  if (score >= 85) return 'radiant';
-  if (score >= 65) return 'good';
-  if (score >= 45) return 'ok';
-  if (score >= 25) return 'low';
-  return 'bad';
+/** Below this the buddy is too flat to perform its personality. */
+export const LOW_ENERGY = 25;
+
+/** Worst-to-best, so a cap can be applied by index. */
+const TIERS: MoodTier[] = ['bad', 'low', 'ok', 'good', 'radiant'];
+
+/**
+ * Mood, capped by energy.
+ *
+ * The `drained` term in moodScore subtracts at most 15, which against a base of
+ * 100 and a streak bonus of up to +15 could never move the tier while the user
+ * was active. So a buddy at 15% energy still scored 100 and rendered "radiant",
+ * directly above a reaction line drawn from the tired pool: the same card
+ * claiming elation and exhaustion at once.
+ *
+ * Mood and energy stay separate axes — you can be delighted and still be spent —
+ * but the card may not claim more animation than the buddy has left to give.
+ * The cap, not the score, is what keeps the two halves of the card agreeing.
+ */
+export function moodTier(score: number, energy = 100): MoodTier {
+  const tier: MoodTier =
+    score >= 85 ? 'radiant' : score >= 65 ? 'good' : score >= 45 ? 'ok' : score >= 25 ? 'low' : 'bad';
+
+  const cap: MoodTier = energy < LOW_ENERGY / 2 ? 'low' : energy < LOW_ENERGY ? 'ok' : 'radiant';
+  return TIERS.indexOf(tier) <= TIERS.indexOf(cap) ? tier : cap;
 }
 
 export function absence(state: BuddyState, now: Date): Absence {
@@ -245,7 +317,9 @@ export function observe(
   if (evolvedTo) addMilestone(state, now, `Evolved into a ${evolvedTo.name}. ${evolvedTo.emoji}`);
 
   const p = PERSONALITIES[state.personality];
-  const tiredOut = state.energy < 25;
+  // Same threshold the mood cap uses, so the reaction pool and the mood tier
+  // can never disagree about whether the buddy is spent.
+  const tiredOut = state.energy < LOW_ENERGY;
   const reaction = pickLine(tiredOut ? p.tired : p.lines[kind], state);
   state.lastReaction = reaction;
   state.lastSeenAt = now.toISOString();

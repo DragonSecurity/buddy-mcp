@@ -51,7 +51,7 @@ export function renderStatus(
   const p = PERSONALITIES[state.personality];
   const stage = stageFor(state.level);
   const need = xpForLevel(state.level);
-  const tier = moodTier(moodScore(state, now));
+  const tier = moodTier(moodScore(state, now), state.energy);
 
   if (hatched) {
     return [
@@ -233,7 +233,9 @@ export function renderObserve(state: BuddyState, result: ObserveResult, suggesti
   }
 
   lines.push('', `> ${result.reaction}`);
-  if (result.tiredOut) lines.push('', `_${state.name} is running low on energy — they recover while you're away._`);
+  if (result.tiredOut) {
+    lines.push('', `_${state.name} is running low on energy — a break restores them, and the next session starts fresh._`);
+  }
   if (suggestion) lines.push('', renderNudge(state, suggestion));
 
   return lines.join('\n');
