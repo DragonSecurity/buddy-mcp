@@ -3,7 +3,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 
-import { applyIdle, classify, observe, stageFor, touchStreak } from './engine.js';
+import { applySessionEnergy, classify, observe, stageFor, touchStreak } from './engine.js';
 import { renderAdvice, renderObserve, renderSkills, renderStatus } from './render.js';
 import {
   advise,
@@ -73,7 +73,7 @@ server.registerTool(
     const now = new Date();
     beat(now);
     const { state, hatched } = load(now);
-    applyIdle(state, now);
+    applySessionEnergy(state, now);
     if (!hatched) touchStreak(state, now);
     let seen;
     try {
@@ -120,7 +120,7 @@ server.registerTool(
     const now = new Date();
     beat(now);
     const { state, hatched } = load(now);
-    applyIdle(state, now);
+    applySessionEnergy(state, now);
 
     const result = observe(state, summary, now, kind);
     save(state);

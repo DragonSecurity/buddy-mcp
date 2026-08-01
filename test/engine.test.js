@@ -17,12 +17,13 @@ const {
   stageFor,
   xpForLevel,
   touchStreak,
-  applyIdle,
+
   moodScore,
   moodTier,
   SESSION_GAP_HOURS,
   LOW_ENERGY,
-  REGEN_PER_HOUR,
+  DRAIN_PER_HOUR,
+  applySessionEnergy,
 } = await import('../dist/engine.js');
 const { hatch, load, save, statePath, stateDir, localDay, closeDb, recordEvent } =
   await import('../dist/state.js');
@@ -66,8 +67,9 @@ describe('progression', () => {
     assert.equal(stageFor(5).id, 'whelp');
     assert.equal(stageFor(10).id, 'dragon');
     assert.equal(stageFor(35).id, 'ascendant');
-    assert.equal(stageFor(45).id, 'astral');
-    assert.equal(stageFor(54).id, 'astral');
+    assert.equal(stageFor(59).id, 'ascendant');
+    assert.equal(stageFor(60).id, 'astral');
+    assert.equal(stageFor(99).id, 'astral');
     assert.equal(stageFor(999).id, 'eternal');
   });
 
@@ -149,15 +151,31 @@ describe('streaks', () => {
 });
 
 describe('energy and mood', () => {
-  it('drains with work and recovers while idle', () => {
+  it('drains with elapsed session time, not with work done', () => {
     const s = hatch(T0);
-    for (let i = 0; i < 10; i++) observe(s, 'Fixed a bug', T0);
-    assert.ok(s.energy < 100, 'work costs energy');
-    const drained = s.energy;
+    for (let i = 0; i < 50; i++) observe(s, 'Fixed a bug', T0);
+    assert.equal(s.energy, 100, 'fifty observations at the same instant cost nothing');
 
-    applyIdle(s, hoursLater(T0, 5));
-    assert.ok(s.energy > drained, 'rest restores energy');
-    assert.ok(s.energy <= 100, 'energy is capped');
+    applySessionEnergy(s, hoursLater(T0, 3));
+    assert.equal(s.energy, 100 - 3 * DRAIN_PER_HOUR, 'three hours in a session costs three hours');
+  });
+
+  // The old model charged 4 per observation against a regen clock, so a burst
+  // — the exact cadence this server asks for — drained fastest.
+  it('costs the same however the work is distributed', () => {
+    const burst = hatch(T0);
+    let t = T0;
+    for (let i = 0; i < 40; i++) {
+      t = new Date(T0.getTime() + (i + 1) * 30_000); // 40 observations, landing at 20 minutes
+      applySessionEnergy(burst, t);
+      observe(burst, 'Fixed a bug', t);
+    }
+    const spread = hatch(T0);
+    const end = hoursLater(T0, 20 / 60);
+    applySessionEnergy(spread, end);
+    observe(spread, 'Fixed a bug', end);
+
+    assert.ok(Math.abs(burst.energy - spread.energy) < 0.01, `${burst.energy} vs ${spread.energy}`);
   });
 
   it('sours when neglected and brightens on a streak', () => {
@@ -181,31 +199,32 @@ describe('energy and mood', () => {
 });
 
 describe('energy is per-session', () => {
-  it('regenerates linearly inside a session', () => {
+  it('drains linearly inside a session', () => {
     const s = hatch(T0);
-    s.energy = 40;
-    applyIdle(s, hoursLater(T0, 2)); // under the session boundary
-    assert.equal(s.energy, 40 + 2 * REGEN_PER_HOUR);
+    applySessionEnergy(s, hoursLater(T0, 2)); // under the session boundary
+    assert.equal(s.energy, 100 - 2 * DRAIN_PER_HOUR);
   });
 
-  // Break-even is REGEN_PER_HOUR / 4. This pins the rate the tuning targets, so
-  // a future change to either constant has to be deliberate about the pacing.
-  it('sustains five observations an hour indefinitely', () => {
+  // Pins the shape of a long day: still able to perform most of the way through,
+  // visibly flagging only in the last stretch.
+  it('survives a full working day and flags only near the end', () => {
     const s = hatch(T0);
     let t = T0;
-    for (let i = 0; i < 200; i++) {
-      t = new Date(t.getTime() + 12 * 60_000); // 5/hour
-      applyIdle(s, t);
-      observe(s, 'Fixed a bug', t);
+    const seen = {};
+    for (let h = 1; h <= 12; h++) {
+      t = hoursLater(T0, h);
+      applySessionEnergy(s, t);
+      for (let i = 0; i < 6; i++) seen[h] = observe(s, 'Fixed a bug', t).tiredOut;
     }
-    assert.ok(s.energy > LOW_ENERGY, `energy fell to ${s.energy} at the target rate`);
+    assert.equal(seen[8], false, 'eight hours in, still performing');
+    assert.equal(seen[12], true, 'twelve hours in, visibly spent');
   });
 
-  it('does not reach full from a short in-session gap', () => {
+  it('does not reset from a gap shorter than a session break', () => {
     const s = hatch(T0);
     s.energy = 10;
-    applyIdle(s, hoursLater(T0, SESSION_GAP_HOURS - 1));
-    assert.ok(s.energy < 100, `expected a partial recovery, got ${s.energy}`);
+    applySessionEnergy(s, hoursLater(T0, SESSION_GAP_HOURS - 1));
+    assert.ok(s.energy < 100, `a short gap is not a break, got ${s.energy}`);
   });
 
   // The deficit used to carry: end a long session at 0%, come back three hours
@@ -214,14 +233,14 @@ describe('energy is per-session', () => {
   it('starts a new session at full after a long gap', () => {
     const s = hatch(T0);
     s.energy = 0;
-    applyIdle(s, hoursLater(T0, SESSION_GAP_HOURS));
+    applySessionEnergy(s, hoursLater(T0, SESSION_GAP_HOURS));
     assert.equal(s.energy, 100);
   });
 
   it('starts the next morning at full however drained the night before', () => {
     const s = hatch(T0);
     s.energy = 3;
-    applyIdle(s, hoursLater(T0, 10));
+    applySessionEnergy(s, hoursLater(T0, 10));
     assert.equal(s.energy, 100);
   });
 });

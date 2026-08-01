@@ -10,13 +10,16 @@ import type {
 } from './types.js';
 
 /**
- * The stage ladder is the actual content; levels past its top are integers with
- * nothing attached. Ascendant used to be the end at 35, which a heavy user
- * reached inside a year — after that the buddy could still level but could never
- * become anything again. Astral and Eternal extend the arc rather than merely
- * delaying its exhaustion. Paced against the measured economy (22 xp per
- * observation), Eternal is roughly four years of heavy use and over a decade of
- * moderate use: rare enough to mean something, not so rare it is decorative.
+ * Stage rarity is set by where a stage sits on the level axis, not by how
+ * expensive a level is. Those are separable, and conflating them was a mistake
+ * worth recording: the curve was once steepened specifically to stop a heavy
+ * user reaching the top of this ladder inside a year, which worked, but bought
+ * it by making every individual level unreachable too. Spreading the stages up
+ * a cheap curve gets both — a level lands every week or two forever, while
+ * Eternal stays years away.
+ *
+ * Against the measured economy (22 xp per observation, 20 a day): Elder ~2
+ * months, Ascendant ~6 months, Astral ~1.6 years, Eternal ~4.6 years.
  */
 export const STAGES: Stage[] = [
   { id: 'egg', name: 'Egg', emoji: '🥚', minLevel: 1 },
@@ -25,8 +28,8 @@ export const STAGES: Stage[] = [
   { id: 'dragon', name: 'Dragon', emoji: '🐉', minLevel: 10 },
   { id: 'elder', name: 'Elder', emoji: '🐲', minLevel: 20 },
   { id: 'ascendant', name: 'Ascendant', emoji: '✨', minLevel: 35 },
-  { id: 'astral', name: 'Astral', emoji: '🌌', minLevel: 45 },
-  { id: 'eternal', name: 'Eternal', emoji: '🌟', minLevel: 55 },
+  { id: 'astral', name: 'Astral', emoji: '🌌', minLevel: 60 },
+  { id: 'eternal', name: 'Eternal', emoji: '🌟', minLevel: 100 },
 ];
 
 export function stageFor(level: number): Stage {
@@ -36,21 +39,25 @@ export function stageFor(level: number): Stage {
 }
 
 /**
- * Gentle at first, then a real climb: 100 XP to level 2, ~4300 to level 10.
+ * Linear: 100 XP to level 2, then 150 more for each level after.
  *
- * The quadratic term was 8, which was set before there was any measurement of
- * what the engine actually pays out. At the observed 22 XP per observation that
- * curve handed a heavy user the whole stage ladder inside four months — the
- * pacing problem was never that levelling felt slow, it was that the content ran
- * out. 40 puts Ascendant around a year of heavy use and three years of moderate
- * use, with Astral and Eternal beyond it.
+ * This was quadratic, and briefly steeply quadratic, both times for the wrong
+ * reason. Levels were made expensive in order to make stages rare — but a stage
+ * is only a level number, so the two can be tuned independently. The quadratic
+ * bought stage rarity at the price of a bar that visibly did not move for a
+ * week, which is the one thing a progress bar exists not to do.
  *
- * Raising this only makes future levels dearer; `level` is stored, never derived
+ * Linear keeps a level roughly five days away early and a few weeks away deep
+ * in, while STAGES carries the rarity by sitting further up. Measured against
+ * this engine's real payout, that reaches Eternal later than the steep
+ * quadratic ever did, and every level in between is worth watching.
+ *
+ * Changing this only reprices future levels; `level` is stored, never derived
  * from `totalXp`, so no existing progress is revalued or lost.
  */
 export function xpForLevel(level: number): number {
   const n = Math.max(0, level - 1);
-  return 100 + 60 * n + 40 * n * n;
+  return 100 + 150 * n;
 }
 
 const BASE_XP: Record<ObservationKind, number> = {
@@ -155,18 +162,11 @@ export function hoursSince(iso: string, now: Date): number {
 export const SESSION_GAP_HOURS = 4;
 
 /**
- * Energy regained per idle hour inside a session.
- *
- * At 10/hour against a cost of 4 per observation, break-even was 2.5
- * observations an hour — well under the rate an agentic session actually
- * produces, and well under the rate this server's own install instructions ask
- * for ("after completing any coding task"). A ten-hour session at six an hour
- * bottomed out halfway and spent its back half on generic tired lines. 20/hour
- * puts break-even at five an hour. Regen is the lever rather than cost because
- * cost feeds `energyMult`, and lowering it would inflate XP per observation on
- * top of the pacing change.
+ * Energy lost per hour spent inside a session. Tired at ~9.4 hours in, empty at
+ * 12.5, and full again after any real break.
  */
-export const REGEN_PER_HOUR = 20;
+export const DRAIN_PER_HOUR = 8;
+
 
 /**
  * Time-travel step applied before every tool call: the buddy rests while you're
@@ -181,14 +181,19 @@ export const REGEN_PER_HOUR = 20;
  * going", which is the only thing it is useful for — and the only thing the
  * status card claims it means.
  */
-export function applyIdle(state: BuddyState, now: Date): void {
+export function applySessionEnergy(state: BuddyState, now: Date): void {
   const idle = hoursSince(state.lastSeenAt, now);
   if (idle >= SESSION_GAP_HOURS) {
     state.energy = 100;
     return;
   }
-  state.energy = clamp(state.energy + idle * REGEN_PER_HOUR, 0, 100);
+  // Subtracting each gap in turn sums to the session's elapsed hours, because
+  // energy was set to 100 when the session began.
+  state.energy = clamp(state.energy - idle * DRAIN_PER_HOUR, 0, 100);
 }
+
+/** @deprecated Old name from when energy regenerated between observations. */
+export const applyIdle = applySessionEnergy;
 
 export function moodScore(state: BuddyState, now: Date): number {
   const idle = hoursSince(state.lastSeenAt, now);
@@ -300,7 +305,11 @@ export function observe(
   // Counts are rebuilt from a GROUP BY, so a kind with no events is absent
   // rather than zero — `+= 1` on undefined would silently produce NaN.
   state.kindCounts[kind] = (state.kindCounts[kind] ?? 0) + 1;
-  state.energy = clamp(state.energy - 4, 0, 100);
+  // Deliberately no per-observation energy cost. It used to charge 4, which
+  // made a burst of work — the exact behaviour this server asks for — the
+  // fastest way to exhaust the buddy, and made the XP multiplier a tax on
+  // productivity. Energy is a function of how long the session has run, and
+  // nothing else.
 
   let leveledTo: number | null = null;
   // `while`, not `if` — one observation can carry an idle buddy up two levels.
