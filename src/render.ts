@@ -21,9 +21,32 @@ const MOOD_EMOJI: Record<MoodTier, string> = {
   bad: '😞',
 };
 
+/**
+ * Eighth-width block characters, so the bar has 8× the resolution of its
+ * character count. Rounding to whole blocks meant a wide level showed the same
+ * single block for days at a time — a progress bar that does not visibly move
+ * after real work reads as "you got nowhere", which is the one thing it exists
+ * not to say. A partial block moves after a single observation.
+ */
+const PARTIALS = ['', '▏', '▎', '▍', '▌', '▋', '▊', '▉'];
+
 function bar(fraction: number, width: number, full = '█', empty = '░'): string {
-  const filled = Math.round(Math.min(1, Math.max(0, fraction)) * width);
-  return full.repeat(filled) + empty.repeat(width - filled);
+  const clamped = Math.min(1, Math.max(0, fraction));
+  const eighths = Math.round(clamped * width * 8);
+  const whole = Math.floor(eighths / 8);
+  const rest = eighths % 8;
+
+  // Only the default block set has partials; the energy bar uses shaded glyphs
+  // that have no eighth-width equivalents, so it keeps whole-cell rounding.
+  if (full !== '█') {
+    const filled = Math.round(clamped * width);
+    return full.repeat(filled) + empty.repeat(width - filled);
+  }
+
+  // Never show an empty bar for non-zero progress: some movement is the point.
+  const head = whole === 0 && rest === 0 && clamped > 0 ? PARTIALS[1]! : PARTIALS[rest]!;
+  const body = full.repeat(Math.min(whole, width));
+  return (body + head).padEnd(width, empty).slice(0, width);
 }
 
 function daysSince(iso: string, now: Date): number {
