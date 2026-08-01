@@ -15,7 +15,7 @@ export function dbPath(): string {
   return join(stateDir(), 'buddy.db');
 }
 
-const SCHEMA_VERSION = 6;
+const SCHEMA_VERSION = 7;
 
 let handle: DatabaseSync | null = null;
 let handlePath = '';
@@ -71,6 +71,7 @@ function migrate(db: DatabaseSync): void {
     if (from < 4) migrateV4(db);
     if (from < 5) migrateV5(db);
     if (from < 6) migrateV6(db);
+    if (from < 7) migrateV7(db);
     db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
     db.exec('COMMIT');
   } catch (err) {
@@ -227,6 +228,24 @@ function migrateV4(db: DatabaseSync): void {
  * Existing history is backfilled: a day that recorded an observation self
  * evidently had a working buddy.
  */
+/**
+ * Discards an energy value produced by the retired model.
+ *
+ * Energy used to be spent per observation against a regenerating clock. It is
+ * now purely a function of how long the current session has run. The number
+ * left in the database was produced by the old rules and means nothing under
+ * the new ones — a buddy that had simply been busy came back reading 1%, which
+ * the new model would only ever produce twelve hours into a single sitting.
+ *
+ * The value would correct itself at the next four-hour break, but leaving a
+ * companion visibly sulking until then, for work it was thanked for under
+ * different rules, is the wrong way to land a change meant to stop exactly
+ * that. Everything else — level, xp, streak, history — is untouched.
+ */
+function migrateV7(db: DatabaseSync): void {
+  db.exec('UPDATE buddy SET energy = 100 WHERE id = 1');
+}
+
 /**
  * Reprices imported history at this engine's rates.
  *
