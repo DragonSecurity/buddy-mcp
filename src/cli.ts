@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { backfillFromTranscripts, TRANSCRIPT_ROOT } from './backfill.js';
 import { CLAUDE_JSON, FIORA_DB, importFromFiora, rescueOriginal } from './import.js';
+import { DEFAULT_HOST, DEFAULT_PORT, serve } from './serve.js';
 import { statePath } from './state.js';
 import { PERSONALITY_IDS } from './types.js';
 import type { PersonalityId } from './types.js';
@@ -12,6 +13,39 @@ function flag(name: string): string | undefined {
 
 function main(): void {
   const cmd = process.argv[2];
+
+  if (cmd === 'serve') {
+    const port = Number(flag('port') ?? DEFAULT_PORT);
+    if (!Number.isInteger(port) || port < 1 || port > 65535) {
+      process.stderr.write(`Invalid --port "${flag('port')}". Expected 1-65535.\n`);
+      process.exit(1);
+    }
+    const host = flag('host') ?? DEFAULT_HOST;
+
+    serve({ port, host }).then(
+      (server) => {
+        process.stdout.write(
+          [
+            `buddy-mcp serve — read-only status on http://${host}:${port}/status`,
+            `  reading ${statePath()}`,
+            host === DEFAULT_HOST
+              ? '  bound to loopback; pass --host 0.0.0.0 to reach it from the LAN'
+              : `  bound to ${host} — reachable from the LAN, and unauthenticated`,
+            '',
+          ].join('\n'),
+        );
+        const stop = () => server.close(() => process.exit(0));
+        process.on('SIGINT', stop);
+        process.on('SIGTERM', stop);
+      },
+      (err: unknown) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        process.stderr.write(`Could not listen on ${host}:${port} — ${msg}\n`);
+        process.exit(1);
+      },
+    );
+    return;
+  }
 
   if (cmd === 'backfill') {
     const tolerance = Number(flag('tolerance') ?? 120);
@@ -54,6 +88,14 @@ function main(): void {
         '  buddy-import rescue [--identity <path>] [--events <path|none>]',
         '                      [--personality <id>] [--force]',
         '  buddy-import backfill [--dry-run] [--tolerance <seconds>] [--from <dir>]',
+        '  buddy-import serve [--port <n>] [--host <addr>]',
+        '',
+        'serve    Expose the buddy read-only over HTTP, for a display or',
+        '         dashboard to poll. Never writes — polling it does not keep',
+        '         the buddy awake or feed its streak.',
+        `  --port         listen port (default: ${DEFAULT_PORT})`,
+        `  --host         bind address (default: ${DEFAULT_HOST}, loopback only)`,
+        '                 use 0.0.0.0 to reach it from the LAN — unauthenticated',
         '',
         'backfill Recover real task descriptions for imported history by',
         "         matching Claude Code's transcripts to stored events by time.",

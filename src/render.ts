@@ -13,7 +13,7 @@ import type { Presence } from './presence.js';
 import type { Advice, SkillAffinity, Suggestion, SkillStat } from './skills.js';
 import type { BuddyState, MoodTier } from './types.js';
 
-const MOOD_EMOJI: Record<MoodTier, string> = {
+export const MOOD_EMOJI: Record<MoodTier, string> = {
   radiant: '🤩',
   good: '😊',
   ok: '😐',
