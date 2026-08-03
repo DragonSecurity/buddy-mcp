@@ -40,6 +40,22 @@ export function getDb(): DatabaseSync {
   return handle;
 }
 
+/**
+ * A second, uncached handle opened read-only — for readers outside the MCP
+ * server process, like `buddy serve`.
+ *
+ * Deliberately does *not* mkdir, migrate, or touch the cached handle. A reader
+ * must never create a database, never move the schema underneath a running
+ * server, and never be the reason a write fails. It is the caller's job to
+ * close it. Throws if the database does not exist yet, which is the honest
+ * answer for a reader: there is nothing to read.
+ */
+export function openReadOnly(): DatabaseSync {
+  const db = new DatabaseSync(dbPath(), { readOnly: true });
+  db.exec('PRAGMA busy_timeout = 5000');
+  return db;
+}
+
 /** Test hook: drop the cached handle so a new BUDDY_HOME takes effect. */
 export function closeDb(): void {
   if (handle) handle.close();

@@ -1,7 +1,7 @@
-import { renameSync } from 'node:fs';
+import { existsSync, renameSync } from 'node:fs';
 import type { DatabaseSync } from 'node:sqlite';
 
-import { closeDb, dbPath, getDb, stateDir } from './db.js';
+import { closeDb, dbPath, getDb, openReadOnly, stateDir } from './db.js';
 import { NAMES, PERSONALITIES } from './personality.js';
 import { PERSONALITY_IDS } from './types.js';
 import type { BuddyState, Milestone, ObservationKind, PersonalityId } from './types.js';
@@ -143,6 +143,50 @@ export function load(now: Date): LoadResult {
   }
 
   return { state: rowToState(db, row), hatched: false };
+}
+
+/**
+ * Reads the buddy without touching it — no hatch, no migration, no write.
+ *
+ * `load()` is the wrong tool for an outside observer: it hatches and saves a
+ * brand-new buddy when the table is empty, and `getDb()` migrates. A display
+ * polling every few seconds must do neither. It must also never update
+ * `lastSeenAt`, which is what `buddy_status` does — that field is what energy
+ * drain and streaks are measured against, so a poller that touched it would
+ * pin the buddy at "active" forever and quietly break both.
+ *
+ * Returns `{ state: null }` when no buddy has hatched yet, and `unreadable`
+ * when the database exists but cannot be read — a corrupt file or bad
+ * permissions. Those are different things and a display should be able to say
+ * so: reporting "no buddy yet" for a buddy that exists but is unreachable is a
+ * lie, and it points at the wrong fix.
+ *
+ * Never throws, never quarantines. `load()` renames a corrupt database out of
+ * the way and hatches a replacement; a reader must do neither, so it reports
+ * instead.
+ */
+export interface PeekResult {
+  state: BuddyState | null;
+  unreadable: boolean;
+}
+
+export function peek(): PeekResult {
+  let db: DatabaseSync;
+  try {
+    db = openReadOnly();
+  } catch (err) {
+    // No file at all is "nothing to read yet"; anything else is a real fault.
+    const missing = (err as NodeJS.ErrnoException)?.code === 'ENOENT' || !existsSync(dbPath());
+    return { state: null, unreadable: !missing };
+  }
+  try {
+    const row = db.prepare('SELECT * FROM buddy WHERE id = 1').get() as BuddyRow | undefined;
+    return { state: row ? rowToState(db, row) : null, unreadable: false };
+  } catch {
+    return { state: null, unreadable: true };
+  } finally {
+    db.close();
+  }
 }
 
 export function save(state: BuddyState): void {
