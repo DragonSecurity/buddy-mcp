@@ -1,21 +1,33 @@
 {
   "name": "buddy-mcp",
-  "version": "2.0.0",
+  "version": "2.1.0",
+  "private": true,
   "description": "A persistent coding companion for Claude Code, served over MCP.",
   "type": "module",
+  "author": "dragonsecurity (https://github.com/DragonSecurity)",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/DragonSecurity/buddy-mcp.git"
+  },
+  "homepage": "https://github.com/DragonSecurity/buddy-mcp#readme",
+  "bugs": {
+    "url": "https://github.com/DragonSecurity/buddy-mcp/issues"
+  },
   "bin": {
     "buddy-mcp": "dist/index.js",
     "buddy-import": "dist/cli.js"
   },
   "main": "dist/index.js",
   "files": [
-    "dist"
+    "dist",
+    "CHANGELOG.md"
   ],
   "scripts": {
     "build": "tsc",
     "watch": "tsc --watch",
     "start": "node dist/index.js",
-    "test": "node --test test/*.test.js"
+    "test": "node --test test/*.test.js",
+    "prepare": "npm run build"
   },
   "keywords": [
     "mcp",
@@ -23,6 +35,9 @@
     "companion"
   ],
   "license": "Apache-2.0",
+  "engines": {
+    "node": ">=24"
+  },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
     "zod": "^4.4.3"

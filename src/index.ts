@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+import { createRequire } from 'node:module';
+
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
@@ -20,7 +22,31 @@ import { presence, recordHeartbeat } from './presence.js';
 import { load, recordEvent, save, statePath } from './state.js';
 import { OBSERVATION_KINDS } from './types.js';
 
-const VERSION = '2.0.0';
+/**
+ * The version a client sees is read from the manifest rather than written out
+ * here, because a literal is a second copy of the version string with nothing
+ * keeping it in step: it survives every release that forgets it, and then every
+ * client on the machine reports a server version that was never published. The
+ * path is the same from a git checkout and from an npm tarball — `dist/index.js`
+ * sits one level below the package root either way, and npm ships package.json
+ * in every tarball it builds, including the one npx unpacks into its cache.
+ *
+ * A manifest that cannot be read is not worth refusing to start over; the
+ * buddy's whole job is to still be there. The fallback is deliberately not a
+ * plausible version number, so a report of it reads as "this build could not
+ * tell you" rather than as a release that exists.
+ */
+function readVersion(): string {
+  try {
+    const { version } = createRequire(import.meta.url)('../package.json') as { version?: unknown };
+    if (typeof version === 'string' && version.length > 0) return version;
+  } catch {
+    /* fall through to the sentinel below */
+  }
+  return '0.0.0-unknown';
+}
+
+const VERSION = readVersion();
 
 const server = new McpServer(
   { name: 'buddy', version: VERSION },

@@ -1,0 +1,272 @@
+name: Release
+
+on:
+  push:
+    # A release is cut by pushing a tag, never by merging to main. The tags this
+    # repository pushes are themselves the distribution channel — consumers
+    # install `github:DragonSecurity/buddy-mcp#semver:^2`, which npm resolves
+    # against these tags — so a merge to main can never surprise a downstream
+    # consumer with a new version, because nothing on main is resolvable until a
+    # tag names it.
+    tags: ['v*']
+
+# Read-only by default. The only job that needs more than that is the one that
+# creates the GitHub release and uploads the tarball to it, and it asks for
+# `contents: write` on itself. Nothing here holds a registry credential or mints
+# an OIDC token, so the job that runs the test suite — the one that executes the
+# most third-party code — has nothing worth stealing attached to it.
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  # Never cancel a release in flight. Cutting one is several steps that are not
+  # atomic together — creating the release, then uploading the tarball onto it —
+  # and an interrupted run leaves either a release with no artifact attached or a
+  # tag sitting in the repository with no release behind it at all. The tag is
+  # the part that matters: `#semver:` ranges resolve against tags, so consumers
+  # can already resolve and install a half-finished release, and the tag cannot
+  # be re-cut to repair it without breaking everyone who already fetched it.
+  cancel-in-progress: false
+
+jobs:
+  # This runs before the test matrix rather than beside it so that a mistyped tag
+  # costs fifteen seconds instead of two full Node builds, and so that every
+  # later job can take the version from one place instead of re-deriving it.
+  version:
+    name: Tag matches package.json
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+      prerelease: ${{ steps.check.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # The ancestry check below needs main's history, and the default
+          # checkout of a tag is one commit deep with a shallow boundary that
+          # `git merge-base` cannot see past — it would answer the question wrong
+          # rather than fail to answer it.
+          fetch-depth: 0
+
+      # Releases are cut from main, and this is the step that makes that true
+      # rather than customary. A tag is resolvable by `#semver:^2` the instant it
+      # is pushed, with nothing between the push and someone else's machine
+      # cloning and building it, so a tag on a side branch hands out code that no
+      # pull request gate — not this repository's version guard, not its test
+      # matrix on two Node majors, not a reviewer — ever looked at. Tagging the
+      # branch you happen to be standing on is one forgotten `git switch` away
+      # from tagging main, and the two are indistinguishable afterwards: both
+      # produce a `vX.Y.Z` that every consumer on the range will fetch.
+      - name: The tag is on main
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          # main is fetched by name rather than read from a remote-tracking ref,
+          # so this does not depend on which refs the checkout action happened to
+          # create for a tag-triggered run.
+          git fetch --no-tags origin main
+
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" FETCH_HEAD; then
+            echo "::error::$TAG points at $GITHUB_SHA, which is not on main."
+            echo "Delete the tag, merge the branch, and tag the commit on main that carries the version."
+            exit 1
+          fi
+
+      - id: check
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          VERSION="$(jq -r '.version // empty' package.json)"
+          if [ -z "$VERSION" ]; then
+            echo "::error::package.json has no version field, so there is nothing this tag could mean."
+            exit 1
+          fi
+
+          # The tag is what a consumer's `#semver:^2` actually resolves against,
+          # and the version in package.json is what npm reads back out of the
+          # tree it cloned to decide what it just installed. If the two disagree,
+          # a range that matched the tag installs a package claiming to be some
+          # other version, the release notes describe code that is not the code
+          # that shipped, and nobody finds out until the wrong behaviour turns up
+          # on someone else's machine.
+          if [ "${TAG#v}" != "$VERSION" ]; then
+            echo "::error::Tag $TAG does not match package.json version $VERSION."
+            echo "Delete the tag, set the version you meant in package.json (with a matching CHANGELOG.md section), and tag the commit that carries it."
+            exit 1
+          fi
+
+          # A hyphen is the semver marker for a prerelease. There is no dist-tag
+          # to hold these back any more, and none is needed: npm excludes
+          # prereleases from a plain caret range, so a tag like v2.1.0-rc.1 is
+          # simply not something `#semver:^2` will ever resolve to. A release
+          # candidate can therefore be tagged and pushed in the open without any
+          # consumer picking it up by accident, and someone who wants it asks for
+          # it by naming that exact version. The flag below only tells GitHub to
+          # label it a prerelease, so the releases page agrees with what the
+          # range resolution is already doing.
+          PRERELEASE=''
+          case "$VERSION" in
+            *-*) PRERELEASE='true' ;;
+          esac
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$PRERELEASE" >> "$GITHUB_OUTPUT"
+          echo "Releasing $VERSION from tag $TAG${PRERELEASE:+ (prerelease)}."
+
+  # Deliberately the same matrix and the same steps as ci.yml. A release must
+  # never be gated more weakly than a pull request, or the tag — which is the
+  # thing consumers resolve and install straight from — becomes the one path onto
+  # someone else's machine that nothing checked.
+  test:
+    name: Test (Node ${{ matrix.node }})
+    needs: version
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # node:sqlite is only usable without a flag from Node 24 onwards.
+        node: ['24', '26']
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      # --ignore-scripts: the build and tests need no lifecycle scripts, and
+      # this repo resolves 94 packages from two declared dependencies.
+      - run: npm ci --ignore-scripts
+
+      # tsc typechecks and emits dist/, which the tests import.
+      - run: npm run build
+
+      - run: npm test
+
+  github-release:
+    name: Cut the GitHub release
+    needs: [version, test]
+    runs-on: ubuntu-latest
+    permissions:
+      # Creating a release and uploading an asset to it both write to the
+      # repository. It is scoped to this job alone so that the test matrix, which
+      # runs the whole dependency tree's code, cannot write to the repository it
+      # was checked out from.
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: '24'
+          cache: npm
+
+      # Same reasoning as ci.yml: nothing in the dependency tree needs to run
+      # code at install time to produce a correct build.
+      - run: npm ci --ignore-scripts
+
+      # tsc over the tagged source. `npm pack` further down runs `prepare`, which
+      # builds again, so strictly this is a second compile of the same source and
+      # the two agree — tsc is deterministic. It is here so that the assertion
+      # below runs against a real build before anything is packed or published,
+      # because that assertion is the last chance to catch the failure that
+      # matters most in this distribution model.
+      - run: npm run build
+
+      # A consumer does not download a prebuilt tarball from a registry. They
+      # clone this tag and their own npm runs `prepare`, which compiles it on
+      # their machine. That makes a tag whose build is broken far worse than a
+      # bad registry upload: it breaks every downstream install directly, and a
+      # tag cannot be amended — moving it would change what `#semver:^2` already
+      # resolved to for everyone who fetched it. dist/ is gitignored, so a build
+      # that silently produced nothing looks exactly like a successful one until
+      # someone tries to start the server. Asserting the two declared bin entries
+      # exist turns that into a red build here, while the tag can still be
+      # deleted and re-cut because nothing has consumed it yet.
+      - name: Assert the package has something to run
+        run: |
+          set -euo pipefail
+          for entry in $(jq -r '.bin[]' package.json); do
+            if [ ! -f "$entry" ]; then
+              echo "::error::package.json declares the bin $entry but the build did not produce it; releasing this tag would break every install that resolves to it."
+              exit 1
+            fi
+          done
+
+      # The release page should carry something installable and not just notes.
+      # This is the exact tarball `npm pack` would hand a registry, built from the
+      # tagged source, so it is what anyone auditing the release compares against
+      # what their own machine compiled. The filename is read back out of npm's
+      # own JSON rather than reconstructed from the name and version, because a
+      # guess that drifts from what npm actually wrote fails at upload time on a
+      # missing file, after the release has already been created.
+      - name: Pack the tarball to attach to the release
+        id: pack
+        run: |
+          set -euo pipefail
+
+          TARBALL="$(npm pack --json | jq -r '.[0].filename')"
+          if [ ! -f "$TARBALL" ]; then
+            echo "::error::npm pack reported $TARBALL but no such file exists, so there is nothing to attach."
+            exit 1
+          fi
+
+          echo "tarball=$TARBALL" >> "$GITHUB_OUTPUT"
+          echo "Packed $TARBALL."
+
+      # The release notes are read out of CHANGELOG.md rather than written by
+      # hand at tag time, so that the notes a consumer reads on the releases page
+      # and the notes in the repository can never drift apart.
+      - name: Extract the CHANGELOG section for this version
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          # Matches "## 2.0.0", "## v2.0.0" and "## 2.0.0 — 2026-08-09", and
+          # stops at the next "## ". The dots are escaped and the version must be
+          # followed by whitespace or end of line, because an unescaped, unanchored
+          # match for 1.0.0 also matches "## 1.0.0-rc.1" and would publish the
+          # release candidate's notes as the release's.
+          BODY="$(awk -v ver="$VERSION" '
+            BEGIN { gsub(/\./, "\\.", ver); re = "^## +v?" ver "([[:space:]]|$)" }
+            $0 ~ re { found = 1; next }
+            found && /^## / { exit }
+            found { print }
+          ' CHANGELOG.md | sed -e '/./,$!d')"
+
+          if [ -z "$BODY" ]; then
+            echo "::error::CHANGELOG.md has no section for $VERSION, so this release would go out with empty notes."
+            echo "The pull request guard checks for this too; a tag pushed from a branch that skipped it can still land here."
+            exit 1
+          fi
+
+          printf '%s\n' "$BODY" > release-notes.md
+
+      # `gh` is preinstalled on the runner, so cutting the release needs no
+      # third-party action and therefore no new SHA to keep pinned. The tarball is
+      # passed as a positional argument, which uploads it as a release asset in
+      # the same call that creates the release, so there is no window in which the
+      # release exists with nothing attached to it.
+      - name: gh release create
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+          PRERELEASE: ${{ needs.version.outputs.prerelease }}
+          TARBALL: ${{ steps.pack.outputs.tarball }}
+        run: |
+          set -euo pipefail
+
+          # --verify-tag refuses to invent a tag: if the ref that triggered this
+          # run somehow does not exist as a tag by the time the release is cut,
+          # the run fails rather than creating a release pointing at nothing.
+          gh release create "$TAG" \
+            --title "$TAG" \
+            --notes-file release-notes.md \
+            --verify-tag \
+            ${PRERELEASE:+--prerelease} \
+            "$TARBALL"
