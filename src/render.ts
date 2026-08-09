@@ -9,6 +9,7 @@ import {
 } from './engine.js';
 import type { ObserveResult } from './engine.js';
 import { PERSONALITIES } from './personality.js';
+import type { Compliance } from './gate.js';
 import type { Presence } from './presence.js';
 import type { Advice, SkillAffinity, Suggestion, SkillStat } from './skills.js';
 import type { BuddyState, MoodTier } from './types.js';
@@ -70,6 +71,7 @@ export function renderStatus(
   hatched: boolean,
   skills: SkillStat[] = [],
   seen?: Presence,
+  gate?: Compliance | null,
 ): string {
   const p = PERSONALITIES[state.personality];
   const stage = stageFor(state.level);
@@ -100,6 +102,15 @@ export function renderStatus(
     if (seen.idle > 0) parts.push(`${seen.idle} quiet`);
     if (seen.unknown > 0) parts.push(`${seen.unknown} unrecorded`);
     lines.push(`Last ${seen.window} days: ${parts.join(' · ')}`);
+  }
+
+  if (gate && gate.total > 0) {
+    // Phrased as what the user did, not as a score out of ten. The number is
+    // here to answer one question — is the gate still catching anything — and a
+    // grade invites gaming a metric whose only value is being honest.
+    const pct = Math.round(gate.rate * 100);
+    const tail = gate.prompted > 0 ? ` · ${gate.prompted} needed a nudge` : ' · never needed a nudge';
+    lines.push(`Recorded ${gate.voluntary}/${gate.total} unprompted (${pct}%)${tail}`);
   }
 
   if (skills.length > 0) {

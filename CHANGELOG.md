@@ -2,6 +2,40 @@
 
 Notable changes to the server. Versions track `package.json`.
 
+## 2.3.0
+
+The status card can say whether work gets recorded without being asked.
+
+### Added
+
+- A compliance line on `buddy_status`: how many code-changing turns in the last
+  30 days recorded an observation before the dragon-dev-buddy gate had to ask
+  for one, and how many needed the nudge.
+
+  The buddy could never tell those apart on its own — an observation arrives
+  either way and pays the same XP. The gate's log distinguishes them as a side
+  effect of its ordering rather than by design: it clears a session's mark
+  *before* blocking, so a `clear` that found a mark still present is a record
+  that came first, and a `stop` that blocked is a turn that ended without one.
+  Every code-changing turn produces exactly one of the two, so they sum rather
+  than overlap. A `clear` with no mark is neither, and is counted on neither
+  side.
+
+  The point is to answer one question: is the gate still catching anything, or
+  has it become ceremony. It is phrased as what happened rather than as a score,
+  because a grade invites gaming a number whose only value is being honest.
+
+- `src/gate.ts`, with `BUDDY_GATE_LOG` to point it elsewhere for tests.
+
+### Notes
+
+- This reads a file the dragon-dev-buddy pack writes, which is a real coupling
+  and is named as such in the source. It is one-directional and the format is
+  append-only JSON lines; an absent or unreadable log means the pack is not
+  installed, which is not an error — the line is simply omitted, as it is when
+  the window contains no code-changing turns. A line built from two events would
+  be noise.
+
 ## 2.2.0
 
 Energy measures a break in the work rather than a break in the conversation.

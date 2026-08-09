@@ -18,6 +18,7 @@ import {
   syncSkills,
   uninstalledPlugins,
 } from './skills.js';
+import { compliance } from './gate.js';
 import { presence, recordHeartbeat } from './presence.js';
 import { load, recordEvent, statePath, withBuddy } from './state.js';
 import { OBSERVATION_KINDS } from './types.js';
@@ -110,10 +111,18 @@ server.registerTool(
       /* diagnostic only */
     }
 
+    // Written by the dragon-dev-buddy pack's gate, which may not be installed.
+    let gate = null;
+    try {
+      gate = compliance(now);
+    } catch {
+      /* diagnostic only */
+    }
+
     const card = withBuddy(now, (state, hatched) => {
       applySessionEnergy(state, now);
       if (!hatched) touchStreak(state, now);
-      const rendered = renderStatus(state, now, hatched, skills, seen);
+      const rendered = renderStatus(state, now, hatched, skills, seen, gate);
       state.lastSeenAt = now.toISOString();
       return rendered;
     });

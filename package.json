@@ -1,6 +1,6 @@
 {
   "name": "buddy-mcp",
-  "version": "2.2.0",
+  "version": "2.3.0",
   "private": true,
   "description": "A persistent coding companion for Claude Code, served over MCP.",
   "type": "module",
