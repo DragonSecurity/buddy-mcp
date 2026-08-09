@@ -9,7 +9,7 @@ once, at hatch, and kept for life.
 
 ```
 🐉 Emberchaos the Dragon · gremlin
-Lv 13  ░░░░░░░░░░░░░░  0/1972 xp
+Lv 13  ░░░░░░░░░░░░░░  0/1900 xp
 Mood  🤩 feral with joy   ·   Energy ▓▓▓▓▓▓▓▓▓▓ 100%
 Streak 2 days (best 12) · 632 observations · 113 days old
 Skills 1/13 used · most-used dataviz (1)
@@ -21,11 +21,131 @@ A rotund, fidgety chonk that thrashes through your code like a wrecking ball…
 
 ## Install
 
+Point an MCP client at this repository. npx fetches and builds it on demand, so
+there is nothing for you to clone and nothing to keep built:
+
+```sh
+claude mcp add buddy --scope user -- npx -y 'github:DragonSecurity/buddy-mcp#semver:^2'
+```
+
+The quotes are for zsh: with `extendedglob` on, `^` is a negation operator, and
+an unquoted spec dies with `zsh: no matches found` before npx is ever reached.
+
+The same thing as a config file, for clients that want one — a project's
+`.mcp.json`, or the `mcpServers` block in `~/.claude.json`:
+
+```json
+{
+  "mcpServers": {
+    "buddy": {
+      "command": "npx",
+      "args": ["-y", "github:DragonSecurity/buddy-mcp#semver:^2"]
+    }
+  }
+}
+```
+
+**This package is not on the npm registry, and is not going there.** Releases
+are GitHub releases, and the tags in this repository are the distribution
+channel — `v2.1.0` is the thing `^2` resolves to. Searching npm for `buddy-mcp`
+will find nothing, or worse will one day find a package somebody else published
+under a name this project never claimed; either way it is not this. Install it
+from the git spec above or from a checkout, and from nowhere else.
+
+**What the git spec actually does, and what it costs.** `#semver:^2` tells npm
+to read this repository's tags, pick the highest `v2.x.y` among them, clone that
+tag, install its devDependencies and run the `prepare` script — `tsc` — to
+compile `dist/` before anything can start. That is real work that a registry
+install does not do: `dist/` is not committed, so the build happens on your
+machine. The first launch on a cold npx cache takes tens of seconds rather than
+a couple, and the machine needs `git` on the `PATH` and enough of a toolchain to
+run the TypeScript compiler. Every later launch is served from the npx cache and
+starts immediately. If your MCP client gives a server a short window to come up,
+the first launch after a new release is the one that will hit it — running the
+command once by hand warms the cache before the client ever asks.
+
+**If your npm has `ignore-scripts` on, this install fails silently.** Turning it
+on globally is a reasonable thing to have done — it is the standard defence
+against a dependency running code at install time — but `prepare` is a script,
+and `prepare` is what compiles `dist/`. With it suppressed npm reports success
+and exits zero, having installed a package with nothing in it: no `dist/`, no
+`buddy-mcp` binary linked, and no warning that anything was skipped. The only
+symptom is your MCP client reporting that the server would not start. Check with
+`npm config get ignore-scripts`; if it is `true`, allow scripts for this one
+install rather than everywhere:
+
+```sh
+claude mcp add buddy --scope user -- npx -y --ignore-scripts=false 'github:DragonSecurity/buddy-mcp#semver:^2'
+```
+
+**The caret is load-bearing.** `^2` accepts every patch and minor tag
+automatically, so fixes and new tools arrive without anyone editing a config,
+and it refuses a `v3.0.0` tag. That refusal is the point: a major bump here
+means the shape of an existing tool changed, and a caller written against the
+old shape — your `CLAUDE.md`, a hook, a skill — would start failing calls that
+used to work. Pinning to a single tag (`#v2.1.0`) freezes the fixes too; asking
+for no ref at all (`github:DragonSecurity/buddy-mcp`) takes whatever is on the
+default branch, which means both the breaking change and work that has not been
+released yet. The caret is the only one of the three that tracks fixes *and*
+stops at the break.
+
+The maintenance commands ship in the same package, under a second binary. The
+examples further down are written as `node dist/cli.js …`, which is the
+from-source form; through npx the same commands are:
+
+```sh
+npx -p 'github:DragonSecurity/buddy-mcp#semver:^2' buddy-import rescue
+npx -p 'github:DragonSecurity/buddy-mcp#semver:^2' buddy-import serve --port 8787
+```
+
+### With the dragon-dev-buddy skill pack
+
+The `dragon-dev-buddy` skill pack ships this server in its own `.mcp.json`, so
+installing that plugin brings a compatible buddy with it — nothing to configure
+twice, and every skill in the pack can call `buddy_advise` before it starts and
+`buddy_observe` when it finishes.
+
+That coupling is exactly what the major version protects. The pack's skills are
+written against the `buddy_observe` / `buddy_advise` tool shape — those argument
+names, those types. If an argument there is ever renamed, dropped or made
+required, the pack would be calling a tool that no longer accepts what it sends,
+and it would fail one skill at a time rather than obviously. So a change to that
+shape is a major release, and a `^2` range declines the upgrade instead of
+letting it land under a plugin that has not been updated for it.
+
+### From source
+
+Building from a checkout is the development path — reach for it when you are
+changing the server, not when you are using it:
+
 ```sh
 npm install
 npm run build
-claude mcp add buddy-mcp --scope user -- node /absolute/path/to/buddy-mcp/dist/index.js
+claude mcp add buddy-dev --scope user -- node /absolute/path/to/buddy-mcp/dist/index.js
 ```
+
+An absolute path into `dist/` carries no version. Every project on the machine
+runs whatever was built last, so an interrupted rebuild takes the buddy down
+everywhere at once and a change made for one repo silently changes all of them.
+That is a reasonable trade for a working copy you are editing, and a poor way to
+run the thing day to day.
+
+If the `dragon-dev-buddy` pack is installed, this entry does not replace the
+server the pack declares — it joins it. Claude Code registers a plugin's servers
+under `plugin:<plugin>:<server>` and suppresses a duplicate only when the command
+matches exactly, so `node …/dist/index.js` and `npx -y github:…` both start, and
+the session ends up with two full sets of `buddy_*` tools. Neither declaration
+sets `BUDDY_HOME`, so both processes open `~/.buddy-mcp/buddy.db` — the live
+buddy, not a copy. Concurrent readers and writers are safe there (WAL, with a
+five-second busy timeout), but the damage is a level up from corruption: every
+tool call loads the buddy row, edits it in memory and writes all of it back, so
+whichever save lands second reverts the other's XP, level and `last_observed_day`
+— and a reverted `last_observed_day` hands out the first-observation-of-the-day
+bonus a second time. One task reported to both tool sets is inserted into
+`events` twice, and nothing afterwards can tell that duplicate from a real
+observation. Give the development copy its own buddy with
+`--env BUDDY_HOME=$HOME/.buddy-mcp-dev`, or take the other server out; do not
+point both at the one you actually keep.
 
 ## Tools
 
@@ -84,7 +204,7 @@ deleted, so its usage counters survive an uninstall/reinstall cycle.
 When a task matches a skill you've never used, the buddy says so:
 
 ```
-🐉 Voidkin · +61 xp (deploy) · first of the day 🌅  →  Lv 13, 61/1972
+🐉 Voidkin · +61 xp (deploy) · first of the day 🌅  →  Lv 13, 61/1900
 
 > Out in the world! Fly, little code, fly!
 
@@ -138,20 +258,24 @@ What you reach for
 ## Mechanics
 
 **Stages.** 🥚 Egg (lv 1) → 🐣 Hatchling (2) → 🦎 Whelp (5) → 🐉 Dragon (10) →
-🐲 Elder (20) → ✨ Ascendant (35).
+🐲 Elder (20) → ✨ Ascendant (35) → 🌌 Astral (60) → 🌟 Eternal (100).
 
 **XP.** Each observation is classified from its summary — `deploy` (30 base) >
 `feature` (26) > `bugfix` (24) > `test` (22) > `refactor` (20) > `other` (18) >
 `docs` (16) > `config` (14). The first observation of each day is worth +25, a
 streak multiplies by up to 1.5×, and a drained buddy learns at 0.7×. Levelling
-costs `100 + 60n + 8n²` XP.
+costs `100 + 150n` XP, with the stages rather than the curve carrying the
+rarity — the two are independent, and coupling them bought rare stages at the
+price of a progress bar that did not visibly move for a week.
 
-**Energy.** Drains 4 per observation, recovers 10/hour while you're away. Below
-25% the buddy complains instead of reacting.
+**Energy.** Measures how long the current session has run, not how much was done
+in it: 8 drains per elapsed hour, and a gap of four hours or more starts a fresh
+session at full. Below 25% the buddy complains instead of reacting.
 
 **Mood.** Loses ground after 18 hours of silence, gains up to 15 from an active
-streak, dips when energy is low. Each personality has its own vocabulary for
-all five mood tiers.
+streak. Energy caps the tier rather than nudging the score, so the card can
+never claim more animation than the buddy has left. Each personality has its own
+vocabulary for all five mood tiers.
 
 **Streaks.** Counted in *your* local calendar days, not UTC. `buddy_status`
 keeps a streak alive but does not spend the daily XP bonus — that's reserved
@@ -272,8 +396,56 @@ from it — stages here are level-based anyway.
 
 ```sh
 npm run build
-npm test     # 153 tests: engine, storage, skills, scoping, advice, presence, backfill, import, rescue, end-to-end MCP
+npm test     # 208 tests: engine, storage, skills, scoping, advice, presence, backfill, import, rescue, serve, hardening, end-to-end MCP
 ```
+
+## Versioning and releases
+
+Semver, with one clarification that decides most of the calls: **the MCP tool
+surface is the public API.** What a caller can write down and depend on is the
+set of tools, their argument names and their types — nothing else.
+
+- **major** — an existing tool changes shape. An argument renamed, removed, made
+  required, or narrowed to accept less than it used to; a tool removed. Anything
+  a caller written against the previous version can get wrong.
+- **minor** — a new tool, a new optional argument, a new CLI subcommand, a new
+  personality. Every existing call still means what it meant.
+- **patch** — fixes and wording that leave every call site valid.
+
+The internals are deliberately not part of that promise. The SQLite schema, the
+XP curve, the level costs and the rendering all change on minor releases:
+migrations run forward on their own, and a re-priced curve cannot break a caller
+that only ever sends a summary string. Locking those down would mean never
+correcting the economy again.
+
+[CHANGELOG.md](CHANGELOG.md) records what changed in each release, newest first.
+
+### Cutting a release
+
+1. Move the unreleased entries in `CHANGELOG.md` under a heading for the new
+   version. That section *is* the release notes, so a version with no section is
+   a version that cannot be released at all.
+2. Bump `version` in `package.json`. It is what the server reports in the MCP
+   handshake, and the release refuses a tag that disagrees with it.
+3. Merge to main. **Releases are cut from main only** — a tag becomes resolvable
+   by `^2` the instant it is pushed, so tagging a side branch hands code that no
+   pull request gate ever looked at to every machine on the range, immediately
+   and without asking.
+4. Tag `vX.Y.Z` on main and push the tag.
+
+Pushing the tag is the release. The workflow checks the tag against
+`package.json`, runs the same build and test matrix a pull request runs, packs
+the tarball, and cuts the GitHub release from the changelog section for that
+version. None of it is done by hand, which is what keeps the tag, the version
+and the changelog from drifting apart.
+
+The tag is not a label on the release — it *is* the release, because
+`npx -y github:DragonSecurity/buddy-mcp#semver:^2` resolves against these tags
+and clones one. Deleting a released tag takes that version away from everyone
+who has not already cached it, and moving one silently changes what a cache miss
+will build tomorrow on a machine that was never told anything changed. A tag
+that went out wrong is fixed by cutting the next patch, never by rewriting the
+one that shipped.
 
 ## License
 

@@ -1,0 +1,178 @@
+name: Version guard
+
+# This runs on pull requests only. It is not a release step; it exists so that a
+# branch cannot reach main in a state that makes the release workflow impossible
+# to run, or — worse — possible to run with a result nobody downstream can see.
+on:
+  pull_request:
+
+# Every check here reads: the repository at two commits, and the tags and
+# releases already published on it. Nothing is written anywhere, and reading
+# releases through `gh` needs no more than the checkout permission already grants.
+permissions:
+  contents: read
+
+concurrency:
+  group: version-guard-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  guard:
+    name: Version, changelog and tags
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # The whole point of this job is to compare the branch against what it
+          # is being merged into, and the default shallow checkout has no base
+          # commit to compare with.
+          fetch-depth: 0
+
+      - name: Read the version on both sides of the pull request
+        id: versions
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+
+          HEAD_VERSION="$(jq -r '.version // empty' package.json)"
+          if [ -z "$HEAD_VERSION" ]; then
+            echo "::error::package.json has no version, and every check below is derived from it."
+            exit 1
+          fi
+
+          # The base commit is read out of the pull request payload rather than by
+          # branch name, so a branch renamed or force-pushed mid-review still
+          # compares against the commit GitHub is actually merging into.
+          BASE_VERSION="$(git show "$BASE_SHA:package.json" 2>/dev/null | jq -r '.version // empty' || true)"
+
+          echo "head_version=$HEAD_VERSION" >> "$GITHUB_OUTPUT"
+          echo "base_version=$BASE_VERSION" >> "$GITHUB_OUTPUT"
+          echo "Base is ${BASE_VERSION:-(none)}, this branch is $HEAD_VERSION."
+
+      # Failure mode: the release workflow reads its GitHub release notes out of
+      # CHANGELOG.md and refuses to publish an empty body. A version with no
+      # section reaching main means the tag cannot be cut at all, and the person
+      # who finds that out is whoever tried to release, long after the change
+      # that caused it was reviewed and forgotten.
+      - name: The version has a CHANGELOG section
+        env:
+          VERSION: ${{ steps.versions.outputs.head_version }}
+        run: |
+          set -euo pipefail
+
+          if [ ! -f CHANGELOG.md ]; then
+            echo "::error::CHANGELOG.md does not exist, so no release can describe itself."
+            exit 1
+          fi
+
+          # Same matcher the release workflow uses, and it has to stay the same:
+          # a section this finds but that one does not would pass review and then
+          # fail at tag time. The dots are escaped and the version must be
+          # followed by whitespace or end of line, so 1.0.0 does not match
+          # "## 1.0.0-rc.1" or "## 11.0.0".
+          BODY="$(awk -v ver="$VERSION" '
+            BEGIN { gsub(/\./, "\\.", ver); re = "^## +v?" ver "([[:space:]]|$)" }
+            $0 ~ re { found = 1; next }
+            found && /^## / { exit }
+            found { print }
+          ' CHANGELOG.md | sed -e '/./,$!d')"
+
+          if [ -z "$BODY" ]; then
+            echo "::error::CHANGELOG.md has no non-empty '## $VERSION' section."
+            echo "Move what is under '## Unreleased' into a '## $VERSION' section, or add one."
+            exit 1
+          fi
+
+      # Failure mode: the plugin consumes this package as
+      # `npx -y github:DragonSecurity/buddy-mcp#semver:^2`, and npm resolves that
+      # range against this repository's git tags. A tag is only ever cut for a
+      # version, so behaviour that moved under an unchanged version number is
+      # never given a tag, is never something the range can resolve to, and can
+      # therefore never reach the plugin — it keeps running the old code,
+      # silently, and reports no error while doing it. Anything that changes what
+      # src/ does therefore has to change the version in the same pull request.
+      - name: src/ changed implies the version changed
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_VERSION: ${{ steps.versions.outputs.head_version }}
+          BASE_VERSION: ${{ steps.versions.outputs.base_version }}
+        run: |
+          set -euo pipefail
+
+          # Three dots: the diff of what this branch adds, not of everything that
+          # has landed on the base branch since it was cut. Without that, an
+          # unrelated merge into main would start demanding a version bump here.
+          CHANGED="$(git diff --name-only "$BASE_SHA...HEAD" -- src/)"
+
+          if [ -z "$CHANGED" ]; then
+            echo "No changes under src/; the version may stay where it is."
+            exit 0
+          fi
+
+          if [ "$HEAD_VERSION" = "$BASE_VERSION" ]; then
+            echo "::error::src/ changed but package.json is still on $HEAD_VERSION."
+            echo "Files changed:"
+            echo "$CHANGED"
+            echo "Bump the version and add the matching CHANGELOG.md section, so the change gets a tag that '#semver:^2' can actually resolve to downstream."
+            exit 1
+          fi
+
+          echo "src/ changed and the version moved ${BASE_VERSION:-(none)} -> $HEAD_VERSION."
+
+      # Failure mode: the tag is the release. A version that already has a tag
+      # cannot be cut again, because `#semver:` ranges resolve against tags and
+      # every consumer that already fetched that tag would silently get different
+      # code if it were moved. So a branch arriving with a version that is already
+      # tagged is dead on arrival — the release for it can never be made — and it
+      # is far better to say so while it is still a pull request than to leave it
+      # to be discovered by whoever tries to push the tag.
+      - name: The version is not already tagged or released
+        env:
+          VERSION: ${{ steps.versions.outputs.head_version }}
+          BASE_VERSION: ${{ steps.versions.outputs.base_version }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          # Only a branch that moves the version is claiming one. A branch that
+          # leaves it alone is sitting on the version the base branch already
+          # carries, and whether that one is tagged was settled when it was
+          # released. Without this exit, the first release poisons the guard for
+          # everything behind it: main comes to rest on the version that was just
+          # tagged, and the next pull request to touch only the README, the tests
+          # or these workflows is failed here and told to bump a version it has no
+          # reason to touch. The checks below are for the branch that proposes a
+          # new one; a branch that changes src/ without proposing one has already
+          # been stopped by the step above.
+          if [ "$VERSION" = "$BASE_VERSION" ]; then
+            echo "This branch leaves the version on $VERSION, so it is not claiming one."
+            exit 0
+          fi
+
+          # `git ls-remote` is asked for one exact ref rather than the whole tag
+          # list, so a repository with no tags at all — which is where this one
+          # starts — is an ordinary empty result and not an error. An exact
+          # refspec also means v2.0 cannot be mistaken for a match on v2.0.0.
+          # Annotated tags answer with an extra peeled "^{}" line, which changes
+          # nothing here: the decision is only whether anything came back.
+          EXISTING_TAG="$(git ls-remote --tags origin "refs/tags/v$VERSION")"
+
+          if [ -n "$EXISTING_TAG" ]; then
+            echo "::error::v$VERSION is already a tag on this repository; that version is spent and the tag cannot be re-cut."
+            echo "Pick the next version in package.json and rename its CHANGELOG.md section to match."
+            exit 1
+          fi
+
+          # A draft release holds its tag name without the tag existing yet, so
+          # the check above cannot see one. Left alone, that draft would be
+          # published under the version this branch is claiming. `gh release view`
+          # exits non-zero when there is no such release, which is the ordinary
+          # case and the one that should pass.
+          if gh release view "v$VERSION" >/dev/null 2>&1; then
+            echo "::error::A GitHub release for v$VERSION already exists (it may still be a draft); that version is spent."
+            echo "Pick the next version in package.json and rename its CHANGELOG.md section to match."
+            exit 1
+          fi
+
+          echo "v$VERSION is not tagged or released yet."
