@@ -19,7 +19,7 @@ import {
   uninstalledPlugins,
 } from './skills.js';
 import { presence, recordHeartbeat } from './presence.js';
-import { load, recordEvent, save, statePath } from './state.js';
+import { load, recordEvent, statePath, withBuddy } from './state.js';
 import { OBSERVATION_KINDS } from './types.js';
 
 /**
@@ -98,18 +98,26 @@ server.registerTool(
   async () => {
     const now = new Date();
     beat(now);
-    const { state, hatched } = load(now);
-    applySessionEnergy(state, now);
-    if (!hatched) touchStreak(state, now);
-    let seen;
+    // Reading the card still writes — energy decays, the streak advances and
+    // last_seen_at moves — so it takes the same lock an observation does.
+    // Before it did, a status call could hand back a card built from a snapshot
+    // taken before a concurrent observation and then write that snapshot back.
+    const skills = refreshSkills(now);
+    let seen: ReturnType<typeof presence> | undefined;
     try {
       seen = presence(now);
     } catch {
       /* diagnostic only */
     }
-    const card = renderStatus(state, now, hatched, refreshSkills(now), seen);
-    state.lastSeenAt = now.toISOString();
-    save(state);
+
+    const card = withBuddy(now, (state, hatched) => {
+      applySessionEnergy(state, now);
+      if (!hatched) touchStreak(state, now);
+      const rendered = renderStatus(state, now, hatched, skills, seen);
+      state.lastSeenAt = now.toISOString();
+      return rendered;
+    });
+
     return text(card);
   },
 );
@@ -145,12 +153,15 @@ server.registerTool(
   async ({ summary, kind, skills_used }) => {
     const now = new Date();
     beat(now);
-    const { state, hatched } = load(now);
-    applySessionEnergy(state, now);
-
-    const result = observe(state, summary, now, kind);
-    save(state);
-    recordEvent(result.kind, result.xpGained, summary, now);
+    // The event row is written inside the transaction so it commits with the XP
+    // it granted. Split across two transactions, a crash between them left an
+    // observation with no event, or an event whose XP had been rolled back.
+    const { state, hatched, result } = withBuddy(now, (state, hatched) => {
+      applySessionEnergy(state, now);
+      const result = observe(state, summary, now, kind);
+      recordEvent(result.kind, result.xpGained, summary, now);
+      return { state, hatched, result };
+    });
 
     const used = skills_used ?? [];
     refreshSkills(now);
@@ -255,11 +266,12 @@ server.registerTool(
   async ({ name }) => {
     const now = new Date();
     beat(now);
-    const { state } = load(now);
-    const old = state.name;
-    state.name = name.trim();
-    state.milestones.push({ at: now.toISOString(), text: `Renamed from ${old} to ${state.name}.` });
-    save(state);
+    const { old, state } = withBuddy(now, (state) => {
+      const old = state.name;
+      state.name = name.trim();
+      state.milestones.push({ at: now.toISOString(), text: `Renamed from ${old} to ${state.name}.` });
+      return { old, state };
+    });
     return text(`${stageFor(state.level).emoji} ${old} is now **${state.name}**.`);
   },
 );
