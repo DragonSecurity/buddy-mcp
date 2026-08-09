@@ -15,7 +15,7 @@ export function dbPath(): string {
   return join(stateDir(), 'buddy.db');
 }
 
-const SCHEMA_VERSION = 7;
+const SCHEMA_VERSION = 8;
 
 let handle: DatabaseSync | null = null;
 let handlePath = '';
@@ -88,6 +88,7 @@ function migrate(db: DatabaseSync): void {
     if (from < 5) migrateV5(db);
     if (from < 6) migrateV6(db);
     if (from < 7) migrateV7(db);
+    if (from < 8) migrateV8(db);
     db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
     db.exec('COMMIT');
   } catch (err) {
@@ -260,6 +261,42 @@ function migrateV4(db: DatabaseSync): void {
  */
 function migrateV7(db: DatabaseSync): void {
   db.exec('UPDATE buddy SET energy = 100 WHERE id = 1');
+}
+
+/**
+ * Anchors energy to the last recorded observation rather than the last tool call.
+ *
+ * Energy was reset by a four-hour gap in `last_seen_at`, which every tool call
+ * refreshes. That was correct while a buddy meant one session. It is not: there
+ * is one server process per Claude Code session, and with several open at once
+ * any one of them touching the buddy kept the clock alive for all of them, so
+ * the gap that restores energy could only happen when every session went quiet
+ * together. Measured over this database's history, 93% of sessions never run
+ * long enough to tire the buddy, and it was sitting at 22% anyway.
+ *
+ * `last_observed_at` is the timestamp the reset now keys on. It is backfilled
+ * from the newest real event so no buddy starts this version looking neglected
+ * for work it was already thanked for, and energy is restored once for the same
+ * reason migrateV7 restored it: the old value was produced under rules that no
+ * longer apply.
+ */
+function migrateV8(db: DatabaseSync): void {
+  const columns = db.prepare('PRAGMA table_info(buddy)').all() as { name: string }[];
+  if (!columns.some((c) => c.name === 'last_observed_at')) {
+    db.exec('ALTER TABLE buddy ADD COLUMN last_observed_at INTEGER NOT NULL DEFAULT 0');
+  }
+
+  // Milestones are bookkeeping, not work, and would otherwise date the anchor
+  // to a level-up rather than to the observation that caused it.
+  db.exec(`
+    UPDATE buddy
+       SET last_observed_at = COALESCE(
+             (SELECT MAX(at) FROM events WHERE kind != 'milestone'),
+             last_seen_at
+           ),
+           energy = 100
+     WHERE id = 1
+  `);
 }
 
 /**

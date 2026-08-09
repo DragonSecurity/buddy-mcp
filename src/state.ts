@@ -39,6 +39,7 @@ export function hatch(now: Date): BuddyState {
     longestStreak: 1,
     lastSeenAt: now.toISOString(),
     lastSeenDay: localDay(now),
+    lastObservedAt: now.toISOString(),
     lastObservedDay: '',
     observations: 0,
     kindCounts: {} as Record<ObservationKind, number>,
@@ -59,6 +60,7 @@ interface BuddyRow {
   streak: number;
   longest_streak: number;
   last_seen_at: number;
+  last_observed_at: number;
   last_seen_day: string;
   last_observed_day: string;
   last_reaction: string;
@@ -105,6 +107,7 @@ function rowToState(db: DatabaseSync, row: BuddyRow): BuddyState {
     streak: Math.max(0, Math.floor(row.streak)),
     longestStreak: Math.max(0, Math.floor(row.longest_streak)),
     lastSeenAt: iso(row.last_seen_at),
+    lastObservedAt: iso(row.last_observed_at || row.last_seen_at),
     lastSeenDay: row.last_seen_day,
     lastObservedDay: row.last_observed_day,
     observations: Number(observations?.n ?? 0),

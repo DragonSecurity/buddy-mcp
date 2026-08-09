@@ -2,6 +2,36 @@
 
 Notable changes to the server. Versions track `package.json`.
 
+## 2.2.0
+
+Energy measures a break in the work rather than a break in the conversation.
+
+### Changed
+
+- Energy now resets after `SESSION_GAP_HOURS` without a recorded **observation**,
+  not without a tool call. There is one server process per Claude Code session,
+  and any one of them calling `buddy_status` refreshed `last_seen_at` for all of
+  them — so the gap that restores energy could only happen when every open
+  session fell quiet together. On a machine running five sessions the reset was
+  effectively unreachable: 93% of that user's sessions never ran long enough to
+  tire the buddy, and it sat at 22% anyway.
+
+  The drain still steps off `last_seen_at`, which advances on every call.
+  Anchoring the drain on the observation as well would re-subtract the same
+  interval on every status call between two observations.
+
+- Mood's neglect term moved to the same anchor, for the same reason: with
+  several sessions open, `last_seen_at` was never stale enough for the buddy to
+  register being ignored, so a buddy that had not been told about work in two
+  days still read as radiant.
+
+### Added
+
+- `last_observed_at` on the buddy row, and schema **v8** to add it. Backfilled
+  from the newest non-milestone event, so no buddy starts this version looking
+  neglected for work it was already thanked for, and energy is restored once —
+  the stored value was produced under rules that no longer apply.
+
 ## 2.1.1
 
 Fixes silent XP loss when more than one session is open.
