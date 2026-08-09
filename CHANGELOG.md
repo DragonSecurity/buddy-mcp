@@ -2,6 +2,34 @@
 
 Notable changes to the server. Versions track `package.json`.
 
+## 2.1.1
+
+Fixes silent XP loss when more than one session is open.
+
+### Fixed
+
+- A buddy is one server process per Claude Code session, and every one of them
+  writes the same database — five open sessions were five concurrent writers.
+  `save()` rewrites all fifteen columns of the singleton row from whatever the
+  caller last read, so an unsynchronised read-modify-write lost whichever update
+  committed in between: a `buddy_status` that loaded before a concurrent
+  `buddy_observe` wrote the pre-observation `xp`, `level` and `last_observed_day`
+  straight back over it. The XP reverted, and the restored `last_observed_day`
+  re-armed the first-of-day bonus for the next observation to collect twice.
+
+  Read-modify-write now happens inside `withBuddy()`, which holds the write lock
+  for the whole cycle with `BEGIN IMMEDIATE`, so a second session blocks on the
+  existing 5s `busy_timeout` instead of racing. The regression test runs two real
+  processes against one database and fails by exactly the number of lost
+  increments without it.
+
+- An observation and the event row recording it were two separate transactions,
+  so a crash between them left XP with no event, or an event whose XP had been
+  rolled back. `recordEvent` now commits with the state it describes.
+
+- A tool call that threw partway through could leave a half-applied buddy
+  written to disk. The transaction rolls it back.
+
 ## 2.1.0
 
 The server gets a way to be installed by version instead of by absolute path,

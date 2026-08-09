@@ -120,10 +120,16 @@ export interface LoadResult {
   hatched: boolean;
 }
 
-export function load(now: Date): LoadResult {
-  let db: DatabaseSync;
+/**
+ * Open the database, quarantining it first if it will not open at all.
+ *
+ * Separate from reading the buddy because the recovery path closes and reopens
+ * the handle, which no open transaction survives — so it has to happen before
+ * withBuddy() takes the write lock, never inside it.
+ */
+function ensureDb(now: Date): DatabaseSync {
   try {
-    db = getDb();
+    return getDb();
   } catch (err) {
     // Don't silently destroy whatever was there — park it and start fresh.
     closeDb();
@@ -132,17 +138,66 @@ export function load(now: Date): LoadResult {
     } catch {
       throw err;
     }
-    db = getDb();
+    return getDb();
   }
+}
 
+function readState(db: DatabaseSync, now: Date): LoadResult {
   const row = db.prepare('SELECT * FROM buddy WHERE id = 1').get() as BuddyRow | undefined;
   if (!row) {
     const state = hatch(now);
-    save(state);
+    saveTo(db, state);
     return { state, hatched: true };
   }
 
   return { state: rowToState(db, row), hatched: false };
+}
+
+export function load(now: Date): LoadResult {
+  return readState(ensureDb(now), now);
+}
+
+/**
+ * Read the buddy, let the caller change it, and write it back — all under one
+ * write lock.
+ *
+ * Every buddy server is its own process, and there is one per Claude Code
+ * session, so five open sessions are five writers against the same file. save()
+ * rewrites all fifteen columns of the singleton row from whatever load()
+ * returned, which makes an unsynchronised read-modify-write a lost update: a
+ * buddy_status that loaded before a concurrent buddy_observe committed will
+ * write the pre-observation xp, level and last_observed_day back over it. The
+ * XP silently reverts, and the restored last_observed_day re-arms the
+ * first-of-day bonus so the next observation collects it twice.
+ *
+ * BEGIN IMMEDIATE takes the write lock on entry rather than on first write, so
+ * the read and the write cannot be interleaved by another process. The other
+ * writer blocks on busy_timeout (5s, set in db.ts) instead of racing. Anything
+ * the callback writes through getDb() — recordEvent, in particular — joins this
+ * transaction and commits with it, so an observation and the XP it granted can
+ * no longer land separately.
+ *
+ * Keep the callback short and synchronous. It runs holding a lock every other
+ * session needs.
+ */
+export function withBuddy<T>(now: Date, fn: (state: BuddyState, hatched: boolean) => T): T {
+  const db = ensureDb(now);
+
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    const { state, hatched } = readState(db, now);
+    const out = fn(state, hatched);
+    saveTo(db, state);
+    db.exec('COMMIT');
+    return out;
+  } catch (err) {
+    try {
+      db.exec('ROLLBACK');
+    } catch {
+      /* already rolled back, or never began — the original error is the one that matters */
+    }
+    throw err;
+  }
 }
 
 /**
@@ -190,7 +245,10 @@ export function peek(): PeekResult {
 }
 
 export function save(state: BuddyState): void {
-  const db = getDb();
+  saveTo(getDb(), state);
+}
+
+function saveTo(db: DatabaseSync, state: BuddyState): void {
   const bornAt = ms(state.bornAt, Date.now());
   const lastSeenAt = ms(state.lastSeenAt, Date.now());
 
