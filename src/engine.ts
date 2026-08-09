@@ -182,13 +182,23 @@ export const DRAIN_PER_HOUR = 8;
  * status card claims it means.
  */
 export function applySessionEnergy(state: BuddyState, now: Date): void {
-  const idle = hoursSince(state.lastSeenAt, now);
-  if (idle >= SESSION_GAP_HOURS) {
+  // The reset keys on the last *observation*, not the last tool call. There is
+  // one server process per Claude Code session, and any one of them checking in
+  // refreshes lastSeenAt for all of them — so with several sessions open the
+  // four-hour gap could only occur when every one of them fell quiet together,
+  // and energy decayed toward zero on a user whose sessions almost never run
+  // long enough to tire anyone. A break is a break in the work, not in the
+  // chatter about it.
+  if (hoursSince(state.lastObservedAt, now) >= SESSION_GAP_HOURS) {
     state.energy = 100;
     return;
   }
+  // The drain still steps off lastSeenAt, which advances on every call.
   // Subtracting each gap in turn sums to the session's elapsed hours, because
-  // energy was set to 100 when the session began.
+  // energy was set to 100 when the session began — anchoring the drain on the
+  // observation instead would re-subtract the same interval on every status
+  // call between two observations.
+  const idle = hoursSince(state.lastSeenAt, now);
   state.energy = clamp(state.energy - idle * DRAIN_PER_HOUR, 0, 100);
 }
 
@@ -196,7 +206,11 @@ export function applySessionEnergy(state: BuddyState, now: Date): void {
 export const applyIdle = applySessionEnergy;
 
 export function moodScore(state: BuddyState, now: Date): number {
-  const idle = hoursSince(state.lastSeenAt, now);
+  // Same anchor as the energy reset, and for the same reason: with several
+  // sessions open, lastSeenAt was never stale enough to register neglect, so a
+  // buddy that had not been told about any work in two days still read as
+  // radiant. Being ignored means no work reported, not no processes running.
+  const idle = hoursSince(state.lastObservedAt, now);
   const neglect = idle > 18 ? Math.min(85, (idle - 18) * 1.2) : 0;
   // A streak only cheers the buddy up while you're actually keeping it.
   const streakBonus = idle < 24 ? Math.min(15, state.streak * 3) : 0;
@@ -291,6 +305,9 @@ export function observe(
   const today = localDay(now);
   const firstToday = state.lastObservedDay !== today;
   state.lastObservedDay = today;
+  // The anchor energy resets from. Set here and nowhere else: this is the only
+  // place work is actually recorded.
+  state.lastObservedAt = now.toISOString();
 
   // A drained buddy learns less, but never nothing.
   const energyMult = 0.7 + 0.3 * (state.energy / 100);

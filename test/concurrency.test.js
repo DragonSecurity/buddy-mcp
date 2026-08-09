@@ -138,3 +138,52 @@ describe('concurrent writers', () => {
     assert.equal(countEvents(), before);
   });
 });
+
+describe('energy resets on a break in the work', () => {
+  it('is not held open by another session checking in', async () => {
+    const { hatch } = await import('../dist/state.js');
+    const { applySessionEnergy, SESSION_GAP_HOURS, DRAIN_PER_HOUR } = await import(
+      '../dist/engine.js'
+    );
+
+    const t0 = new Date('2026-08-09T12:00:00Z');
+    const hours = (n) => new Date(t0.getTime() + n * 3_600_000);
+
+    const state = hatch(t0);
+    state.energy = 30;
+    state.lastObservedAt = t0.toISOString();
+
+    // Another session checks in an hour before we look: lastSeenAt is fresh,
+    // but no work has been recorded for five hours. This is the case that used
+    // to pin energy at whatever it had decayed to, because any session touching
+    // the buddy refreshed the only clock the reset watched.
+    state.lastSeenAt = hours(4).toISOString();
+    applySessionEnergy(state, hours(5));
+    assert.equal(state.energy, 100, 'a break in the work restores energy');
+
+    // And the drain still steps off lastSeenAt, so repeated status calls inside
+    // a working session do not each re-subtract the whole session.
+    const working = hatch(t0);
+    working.energy = 100;
+    working.lastObservedAt = hours(1).toISOString();
+    working.lastSeenAt = hours(1).toISOString();
+    applySessionEnergy(working, hours(2));
+    assert.equal(working.energy, 100 - DRAIN_PER_HOUR);
+
+    working.lastSeenAt = hours(2).toISOString();
+    applySessionEnergy(working, hours(3));
+    assert.equal(
+      working.energy,
+      100 - 2 * DRAIN_PER_HOUR,
+      'two hours of work costs two hours of energy, not three',
+    );
+
+    // The gap constant still means what it says.
+    const rested = hatch(t0);
+    rested.energy = 5;
+    rested.lastObservedAt = t0.toISOString();
+    rested.lastSeenAt = hours(SESSION_GAP_HOURS).toISOString();
+    applySessionEnergy(rested, hours(SESSION_GAP_HOURS));
+    assert.equal(rested.energy, 100);
+  });
+});

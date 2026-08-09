@@ -38,6 +38,14 @@ export interface BuddyState {
   streak: number;
   longestStreak: number;
   lastSeenAt: string;
+  /**
+   * When work was last recorded, as opposed to when the buddy was last spoken
+   * to. Energy resets off this rather than `lastSeenAt`, because there is one
+   * server per Claude Code session and any one of them checking in refreshes
+   * `lastSeenAt` for all of them — which made the break that restores energy
+   * something only a total quiet across every open session could produce.
+   */
+  lastObservedAt: string;
   /** Local-time YYYY-MM-DD, so streaks follow the user's calendar, not UTC. */
   lastSeenDay: string;
   /**
