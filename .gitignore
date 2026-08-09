@@ -6,3 +6,11 @@ dist/
 # Local permission allowlist — machine-specific, and not something to hand a
 # cloner. .dragon-buddy/ stays tracked: it holds no secrets and the team wants it.
 .claude/settings.local.json
+
+# The one exception to .dragon-buddy/ staying tracked. Memories are working
+# notes written by the project-memory skill — why a constraint exists, what was
+# tried and rejected — and they collect paths, hosts and names that read very
+# differently in a public repository than they do in an editor. Because the rest
+# of .dragon-buddy/ is deliberately committed here, this directory has to be
+# excluded on its own account or it rides along with the config and the reports.
+.dragon-buddy/memories/
