@@ -19,6 +19,7 @@ import {
   uninstalledPlugins,
 } from './skills.js';
 import { compliance } from './gate.js';
+import { installCrashHandlers, recentCrashes, recordCrash } from './crash.js';
 import { presence, recordHeartbeat } from './presence.js';
 import { load, recordEvent, statePath, withBuddy } from './state.js';
 import { OBSERVATION_KINDS } from './types.js';
@@ -48,6 +49,11 @@ function readVersion(): string {
 }
 
 const VERSION = readVersion();
+
+// Installed before anything else can throw, including the server construction
+// below — a crash during startup is the one a user is least able to explain,
+// because it leaves no tools to ask with.
+installCrashHandlers(VERSION);
 
 const server = new McpServer(
   { name: 'buddy', version: VERSION },
@@ -119,10 +125,19 @@ server.registerTool(
       /* diagnostic only */
     }
 
+    // A crash the user never saw is a crash they cannot report. This is the
+    // only place the buddy gets to mention its own deaths.
+    let crashes = null;
+    try {
+      crashes = recentCrashes(now);
+    } catch {
+      /* diagnostic only */
+    }
+
     const card = withBuddy(now, (state, hatched) => {
       applySessionEnergy(state, now);
       if (!hatched) touchStreak(state, now);
-      const rendered = renderStatus(state, now, hatched, skills, seen, gate);
+      const rendered = renderStatus(state, now, hatched, skills, seen, gate, crashes);
       state.lastSeenAt = now.toISOString();
       return rendered;
     });
@@ -297,6 +312,7 @@ async function main(): Promise<void> {
 }
 
 main().catch((err) => {
+  recordCrash('startup', err, VERSION);
   process.stderr.write(`buddy-mcp failed to start: ${String(err)}\n`);
   process.exit(1);
 });

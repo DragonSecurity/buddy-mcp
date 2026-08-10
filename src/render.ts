@@ -9,6 +9,7 @@ import {
 } from './engine.js';
 import type { ObserveResult } from './engine.js';
 import { PERSONALITIES } from './personality.js';
+import type { CrashSummary } from './crash.js';
 import type { Compliance } from './gate.js';
 import type { Presence } from './presence.js';
 import type { Advice, SkillAffinity, Suggestion, SkillStat } from './skills.js';
@@ -72,6 +73,7 @@ export function renderStatus(
   skills: SkillStat[] = [],
   seen?: Presence,
   gate?: Compliance | null,
+  crashes?: CrashSummary | null,
 ): string {
   const p = PERSONALITIES[state.personality];
   const stage = stageFor(state.level);
@@ -111,6 +113,15 @@ export function renderStatus(
     const pct = Math.round(gate.rate * 100);
     const tail = gate.prompted > 0 ? ` · ${gate.prompted} needed a nudge` : ' · never needed a nudge';
     lines.push(`Recorded ${gate.voluntary}/${gate.total} unprompted (${pct}%)${tail}`);
+  }
+
+  if (crashes) {
+    // Stated as a fact with a date, not an apology. The user's next question is
+    // always "when", because that is what they can match against what they were
+    // doing — and the phase tells them whether it died serving or starting.
+    const day = crashes.last.slice(0, 10);
+    const what = crashes.count === 1 ? 'crash' : 'crashes';
+    lines.push(`⚠ ${crashes.count} ${what} in ${crashes.window}d · last ${day} (${crashes.lastPhase})`);
   }
 
   if (skills.length > 0) {
