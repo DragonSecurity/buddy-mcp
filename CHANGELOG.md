@@ -2,6 +2,27 @@
 
 Notable changes to the server. Versions track `package.json`.
 
+## 2.3.1
+
+What the compliance line is worth, now that the gate feeding it has been fixed.
+
+### Notes
+
+- The dragon-dev-buddy gate's dirty mark was keyed by session with nothing
+  bounding it to a turn, so an edit could outlive the turn that made it — a
+  background subagent writing under the parent's session id after the turn
+  ended, a turn interrupted before `Stop` ran, a session resumed by id — and be
+  consumed by the next `Stop`. Some share of every `stop`/`block:true` written
+  before 2026-08-10 therefore belongs to a turn that changed nothing, and the
+  prompted count reads high for as long as those events stay inside the 30-day
+  window. Nothing here rewrites them; the window forgets them at its own pace.
+
+- Pack 1.3.1 fixes it by clearing the mark on `UserPromptSubmit`, which logs a
+  new `reset` event. `compliance()` ignores it, as it ignores a `clear` with
+  `had:false`: nothing recorded, and nothing was asked to. `src/gate.ts` says so,
+  so the next reader of that log does not have to work out why a third event
+  exists.
+
 ## 2.3.0
 
 The status card can say whether work gets recorded without being asked.

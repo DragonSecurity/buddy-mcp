@@ -24,7 +24,16 @@ import { join } from 'node:path';
  * Every code-changing turn produces exactly one of the two, which is why they
  * sum to a total rather than overlapping. A `clear` with had:false is neither —
  * it is an observation on a turn that changed nothing, or the one that follows a
- * nag — and is deliberately not counted on either side.
+ * nag — and is deliberately not counted on either side. Neither is a `reset`,
+ * which pack 1.3.1 writes when a new prompt drops a mark left by a turn that has
+ * already ended: nothing recorded, and nothing was asked to.
+ *
+ * That reset is also why the ratio is only honest going forward. Before it, a
+ * mark could outlive its turn — a background agent's edit, an interrupted turn,
+ * a session resumed by id — and be consumed by the next Stop, so some share of
+ * every `stop`/block:true logged before 2026-08-10 belongs to a turn that
+ * changed nothing. The window forgets them at its own pace; nothing here
+ * rewrites them.
  *
  * Reading a file another project writes is a real coupling and worth naming.
  * It is one-directional, the format is append-only JSON lines, and an absent or
