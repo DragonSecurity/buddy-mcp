@@ -2,6 +2,53 @@
 
 Notable changes to the server. Versions track `package.json`.
 
+## 2.3.2
+
+### Fixed
+
+- **The compliance line no longer charges one turn to both columns.** The gate
+  marks the session dirty on every edit and clears the mark on every
+  observation, in tool order, so a turn that records and *then* edits again ends
+  with a fresh mark standing and is blocked for work it already reported. Every
+  such block was counted as `prompted`, alongside the `clear` that had already
+  counted the same turn as `voluntary` — inflating the nagged count with turns
+  that did exactly what was asked, and adding a phantom to the total each time.
+
+  Caught live on 2026-08-10, in a turn that recorded and then wrote two memory
+  files:
+
+  ```
+  18:14:57  clear  had:true                 recorded, voluntarily
+  18:15:30  mark   Edit                     a memory file, after the fact
+  18:15:52  stop   block:true  markedAt:18:15:30
+  18:16:01  clear  had:false                the duplicate the block extracted
+  ```
+
+  `compliance()` now tracks, per session, whether the open turn has already
+  recorded, and discards a block from a turn that had. On the log that found it
+  this moved 5 of 62 blocks out of `prompted`, from 57% recorded-unprompted to
+  59%. The discarded count is exposed as `rearmed` so the exclusion is visible
+  rather than silent; it is deliberately in neither column and not on the card.
+
+### Notes
+
+- The gate logs `markedAt` on a block so these two cases can be told apart, and
+  using it directly is the obvious implementation. It is not the one here: the
+  field is absent from entries written before it was added, and whenever the
+  turn-scoped flag is set `markedAt` is necessarily later than the clear anyway.
+  Turn-scoped state is simpler and stays correct on older logs.
+
+- Turns are delimited by `reset` (which pack 1.3.1 writes on
+  `UserPromptSubmit`) and by `stop`. Logs written before 1.3.1 carry no `reset`,
+  so `stop` is their only boundary; a turn interrupted before `Stop` ran leaks
+  its flag into the next turn, which can only suppress a block that should have
+  counted. Undercounting nags is the safe direction to err.
+
+- The gate's blocking behaviour is unchanged. A turn that records and then edits
+  is still stopped and still asked for a second observation — this only stops
+  that block being *scored* as a nag. Changing when the gate fires is a decision
+  for the pack, not for the metric that reads its log.
+
 ## 2.3.1
 
 What the compliance line is worth, now that the gate feeding it has been fixed.

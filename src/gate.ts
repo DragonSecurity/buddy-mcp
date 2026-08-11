@@ -57,6 +57,13 @@ export interface Compliance {
   rate: number;
   /** Size of the window in days. */
   window: number;
+  /**
+   * Blocks discarded because the turn had already recorded: the mark that
+   * tripped them was written *after* the observation, by an edit later in the
+   * same turn. Counted in neither `voluntary` nor `prompted`, and exposed only
+   * so the exclusion is visible rather than silent.
+   */
+  rearmed: number;
 }
 
 /**
@@ -79,6 +86,38 @@ export function compliance(now: Date, window = 30): Compliance | null {
 
   let voluntary = 0;
   let prompted = 0;
+  let rearmed = 0;
+
+  /**
+   * Whether the turn currently open in each session has already recorded.
+   *
+   * A `stop` with block:true is not by itself evidence that a turn failed to
+   * record. The gate marks the session dirty on every edit and clears the mark
+   * on every observation, in tool order — so a turn that records and *then*
+   * edits again ends with a fresh mark standing, and gets blocked for work it
+   * already reported. The second observation the block extracts is a duplicate:
+   * it pays XP twice and lands in the log as a `clear` with had:false.
+   *
+   * Seen on 2026-08-10, in the session that prompted this fix:
+   *
+   *   18:14:57  clear  had:true                 recorded, voluntarily
+   *   18:15:30  mark   Edit                     a memory file, after the fact
+   *   18:15:52  stop   block:true  markedAt:18:15:30
+   *   18:16:01  clear  had:false                the duplicate
+   *
+   * Counting that `stop` as prompted charges one turn to both columns, which is
+   * the one thing this metric exists not to do: it inflates the nagged count
+   * with turns that did exactly what was asked, and every such turn also adds a
+   * phantom to `total`.
+   *
+   * The gate logs `markedAt` on the block precisely so the two cases can be
+   * told apart, and it is tempting to use it directly — but it is absent from
+   * entries written before it was added, and when the flag below is set it is
+   * necessarily later than the clear anyway. Turn-scoped state is both simpler
+   * and correct on older logs.
+   */
+  const recorded = new Map<string, boolean>();
+  const sessionOf = (event: { session?: unknown }) => String(event.session ?? 'unknown');
 
   for (const line of raw.split('\n')) {
     if (!line) continue;
@@ -92,12 +131,33 @@ export function compliance(now: Date, window = 30): Compliance | null {
     const at = Date.parse(event.at);
     if (!Number.isFinite(at) || at < cutoff.getTime()) continue;
 
-    if (event.event === 'clear' && event.had === true) voluntary++;
-    else if (event.event === 'stop' && event.block === true) prompted++;
+    const session = sessionOf(event);
+
+    if (event.event === 'clear') {
+      // had:true is a turn that recorded before anything asked it to. had:false
+      // is not counted — it is either an observation on a turn that changed
+      // nothing, or the duplicate that follows a nag. Both still prove the turn
+      // called buddy_observe, which is what the flag tracks.
+      if (event.had === true) voluntary++;
+      recorded.set(session, true);
+    } else if (event.event === 'reset') {
+      // UserPromptSubmit: a new turn begins, so nothing it inherits is evidence.
+      recorded.set(session, false);
+    } else if (event.event === 'stop') {
+      if (event.block === true) {
+        if (recorded.get(session)) rearmed++;
+        else prompted++;
+      }
+      // The turn is over either way. Pre-1.3.1 logs carry no `reset`, so this is
+      // the only boundary they have; a turn interrupted before Stop ran leaks
+      // its flag into the next one, which can only ever suppress a block that
+      // should have counted. Undercounting nags is the safe direction to err.
+      recorded.set(session, false);
+    }
   }
 
   const total = voluntary + prompted;
   if (total === 0) return null;
 
-  return { voluntary, prompted, total, rate: voluntary / total, window };
+  return { voluntary, prompted, total, rate: voluntary / total, window, rearmed };
 }

@@ -36,19 +36,28 @@ const daysAgo = (n) => at(new Date(now.getTime() - n * 86_400_000));
 
 describe('gate compliance', () => {
   it('counts a voluntary record and a nagged one, and nothing else', () => {
+    // Written as the turns the gate actually produces, in order, each closed by
+    // its own stop. The counters are turn-scoped now, so a flat bag of events
+    // with no turn structure means something different from what it looks like.
     log([
-      // The two events that mean something.
-      { at: daysAgo(1), event: 'clear', had: true },
-      { at: daysAgo(1), event: 'stop', block: true },
-      // A clear with no mark is an observation on a turn that changed nothing,
-      // or the one that follows a nag. Neither is a code-changing turn.
-      { at: daysAgo(1), event: 'clear', had: false },
-      // A stop that did not block is a turn that had already recorded — already
-      // counted by its clear, and counting it again would double it.
-      { at: daysAgo(1), event: 'stop', block: false },
-      // Marks are not turns; a turn can produce several.
+      // A turn that edited and recorded before anything asked it to.
       { at: daysAgo(1), event: 'mark', tool: 'Edit' },
       { at: daysAgo(1), event: 'mark', tool: 'Write' },
+      { at: daysAgo(1), event: 'clear', had: true },
+      // A stop that did not block is that same turn ending — already counted by
+      // its clear, and counting it again would double it.
+      { at: daysAgo(1), event: 'stop', block: false },
+
+      // A turn that edited and never recorded.
+      { at: daysAgo(1), event: 'reset' },
+      { at: daysAgo(1), event: 'mark', tool: 'Edit' },
+      { at: daysAgo(1), event: 'stop', block: true },
+
+      // A clear with no mark is an observation on a turn that changed nothing,
+      // or the one that follows a nag. Neither is a code-changing turn.
+      { at: daysAgo(1), event: 'reset' },
+      { at: daysAgo(1), event: 'clear', had: false },
+      { at: daysAgo(1), event: 'stop', block: false },
     ]);
 
     const c = compliance(now);
@@ -56,6 +65,85 @@ describe('gate compliance', () => {
     assert.equal(c.prompted, 1);
     assert.equal(c.total, 2);
     assert.equal(c.rate, 0.5);
+    assert.equal(c.rearmed, 0);
+  });
+
+  it('does not charge a turn that recorded and then edited again', () => {
+    // The gate marks on every edit and clears on every observation, in tool
+    // order, so a turn that records and *then* edits ends with a fresh mark and
+    // is blocked for work it already reported. Transcribed from the session
+    // that found it, 2026-08-10.
+    log([
+      { at: daysAgo(1), event: 'reset' },
+      { at: daysAgo(1), event: 'mark', tool: 'Edit' },
+      { at: daysAgo(1), event: 'clear', had: true },
+      { at: daysAgo(1), event: 'mark', tool: 'Write' },
+      { at: daysAgo(1), event: 'stop', block: true, markedAt: daysAgo(1) },
+      // The duplicate the block extracted. Already not counted, and it must not
+      // start being counted either.
+      { at: daysAgo(1), event: 'clear', had: false },
+    ]);
+
+    const c = compliance(now);
+    assert.equal(c.voluntary, 1, 'the turn recorded, voluntarily');
+    assert.equal(c.prompted, 0, 'and must not also be charged as nagged');
+    assert.equal(c.rearmed, 1, 'the discarded block is still visible');
+    assert.equal(c.total, 1, 'one turn, counted once');
+    assert.equal(c.rate, 1);
+  });
+
+  it('still nags a later turn that genuinely never recorded', () => {
+    // The guard is scoped to a turn, not to a session. A turn that recorded
+    // must not immunise every turn after it.
+    log([
+      { at: daysAgo(2), event: 'reset' },
+      { at: daysAgo(2), event: 'mark', tool: 'Edit' },
+      { at: daysAgo(2), event: 'clear', had: true },
+      { at: daysAgo(2), event: 'stop', block: false },
+
+      { at: daysAgo(1), event: 'reset' },
+      { at: daysAgo(1), event: 'mark', tool: 'Edit' },
+      { at: daysAgo(1), event: 'stop', block: true },
+    ]);
+
+    const c = compliance(now);
+    assert.equal(c.voluntary, 1);
+    assert.equal(c.prompted, 1);
+    assert.equal(c.rearmed, 0);
+  });
+
+  it('keeps two interleaved sessions apart', () => {
+    // One log, many sessions: a recording in session A must not excuse a block
+    // in session B, whose events land between A's.
+    log([
+      { at: daysAgo(1), event: 'mark', tool: 'Edit', session: 'A' },
+      { at: daysAgo(1), event: 'mark', tool: 'Edit', session: 'B' },
+      { at: daysAgo(1), event: 'clear', had: true, session: 'A' },
+      { at: daysAgo(1), event: 'stop', block: true, session: 'B' },
+      { at: daysAgo(1), event: 'stop', block: false, session: 'A' },
+    ]);
+
+    const c = compliance(now);
+    assert.equal(c.voluntary, 1);
+    assert.equal(c.prompted, 1, "B never recorded, whatever A did");
+    assert.equal(c.rearmed, 0);
+  });
+
+  it('closes a turn on stop even without a reset, for pre-1.3.1 logs', () => {
+    // Logs written before the pack learned to reset on UserPromptSubmit carry
+    // no reset events at all. Stop is then the only turn boundary there is.
+    log([
+      { at: daysAgo(2), event: 'mark', tool: 'Edit' },
+      { at: daysAgo(2), event: 'clear', had: true },
+      { at: daysAgo(2), event: 'stop', block: false },
+
+      { at: daysAgo(1), event: 'mark', tool: 'Edit' },
+      { at: daysAgo(1), event: 'stop', block: true },
+    ]);
+
+    const c = compliance(now);
+    assert.equal(c.prompted, 1, 'the second turn is still charged');
+    assert.equal(c.rearmed, 0);
   });
 
   it('ignores events outside the window', () => {
