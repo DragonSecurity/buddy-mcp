@@ -2,6 +2,59 @@
 
 Notable changes to the server. Versions track `package.json`.
 
+## 2.4.0
+
+The buddy can tell you it died.
+
+### Added
+
+- A crash journal at `~/.buddy-mcp/crashes.jsonl`, and process-level handlers
+  for `uncaughtException` and `unhandledRejection` that write to it. Startup
+  failures go through the same path.
+
+  Until now the only record of a crash was whatever Node printed on stderr,
+  which the MCP client files under a per-project log directory keyed by a
+  mangled cwd and rotated per session — a path nobody finds without being told.
+  So a buddy that vanished mid-session left no evidence anywhere the buddy
+  itself could reach, and the next session started clean with no way to tell
+  "quiet" from "died".
+
+- A warning line on `buddy_status` when the journal holds anything from the last
+  30 days, with the date and the phase: `⚠ 2 crashes in 30d · last 2026-08-09
+  (unhandled-rejection)`. A crash captured into a file nobody reads is the same
+  problem one step further along.
+
+### Notes
+
+- The journal deliberately does not write to SQLite. The database is the most
+  likely thing to be the cause — a locked file, a half-applied migration, a
+  corrupt page — and taking a write lock while unwinding from an uncaught
+  exception is when it is least likely to succeed. Worse, `withBuddy` blocks on
+  a 5s `busy_timeout`, so a handler that touched it could turn a fast crash into
+  a five-second hang before the same crash.
+
+- Both handlers still exit non-zero, which is what Node already did. This
+  changes what a crash leaves behind, not whether the buddy survives one:
+  serving from state nothing has verified would mean quietly lying about your
+  XP, which is worse than dying loudly enough to notice.
+
+- The bound on the journal is on bytes, not lines. Trimming is size-triggered
+  and drops to the newest 50 entries, so the line count grows back past 50
+  between trims; what it cannot do is exceed 64 KB by more than the entry that
+  tripped the check. Bounding lines exactly would mean reading and rewriting the
+  file on every crash, in the one code path that runs while the process is
+  already dying.
+
+- **What this cannot see.** A launcher that dies before Node loads the server
+  leaves nothing here. That is not hypothetical: on 2026-08-09 the
+  dragon-dev-buddy pack's `npx -y github:DragonSecurity/buddy-mcp#semver:^2`
+  failed to resolve `^2` against a repository that had no tags yet — the first
+  tag ever, `v2.1.0`, was pushed about twenty minutes later — and npm refused
+  the install (`ENOVERSIONS`, "No versions available for undefined"). The client
+  logged `Connection closed`, the buddy was absent for a whole session, and no
+  journal entry was possible because nothing in this process ever ran. An empty
+  `crashes.jsonl` means "no crash we could see", not "no failure".
+
 ## 2.3.2
 
 ### Fixed
