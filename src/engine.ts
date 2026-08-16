@@ -71,29 +71,36 @@ const BASE_XP: Record<ObservationKind, number> = {
   config: 14,
 };
 
-/** Ordered most-specific first — "fixed the deploy config" should read as a fix. */
+/**
+ * Ordered most-specific first — "fixed the deploy config" should read as a fix.
+ *
+ * The `g` flag is on the literals because scoring counts every occurrence, not
+ * just the first. Sharing one global regex across calls is safe here: these are
+ * only ever passed to `String.prototype.match`, which resets `lastIndex` before
+ * it starts, so no call can see state left by the last one.
+ */
 const KIND_PATTERNS: [ObservationKind, RegExp][] = [
   [
     'test',
-    /\b(test|tests|testing|spec|specs|jest|vitest|pytest|mocha|coverage|assertion)\b/i,
+    /\b(test|tests|testing|spec|specs|jest|vitest|pytest|mocha|coverage|assertion)\b/gi,
   ],
-  ['deploy', /\b(deploy|deployed|deploying|ship|shipped|release|released|publish|published|rollout|prod|production)\b/i],
+  ['deploy', /\b(deploy|deployed|deploying|ship|shipped|release|released|publish|published|rollout|prod|production)\b/gi],
   [
     'bugfix',
-    /\b(fix|fixed|fixes|fixing|bug|bugs|patch|patched|repair|resolve|resolved|crash|crashed|error|errors|broke|broken|regression|debug|debugged|hotfix)\b/i,
+    /\b(fix|fixed|fixes|fixing|bug|bugs|patch|patched|repair|resolve|resolved|crash|crashed|error|errors|broke|broken|regression|debug|debugged|hotfix)\b/gi,
   ],
   [
     'refactor',
-    /\b(refactor|refactored|refactoring|clean|cleaned|cleanup|simplif\w*|rename|renamed|restructure|restructured|tidy|tidied|dedupe|deduplicate|extract|extracted|reorganiz\w*|reorganis\w*)\b/i,
+    /\b(refactor|refactored|refactoring|clean|cleaned|cleanup|simplif\w*|rename|renamed|restructure|restructured|tidy|tidied|dedupe|deduplicate|extract|extracted|reorganiz\w*|reorganis\w*)\b/gi,
   ],
-  ['docs', /\b(doc|docs|document|documented|documentation|readme|comment|comments|changelog|guide)\b/i],
+  ['docs', /\b(doc|docs|document|documented|documentation|readme|comment|comments|changelog|guide)\b/gi],
   [
     'config',
-    /\b(config|configured|configuration|setup|set up|install|installed|dependency|dependencies|bump|bumped|upgrade|upgraded|ci|pipeline|lint|linting|tooling|scaffold)\b/i,
+    /\b(config|configured|configuration|setup|set up|install|installed|dependency|dependencies|bump|bumped|upgrade|upgraded|ci|pipeline|lint|linting|tooling|scaffold)\b/gi,
   ],
   [
     'feature',
-    /\b(add|added|adds|implement|implemented|build|built|create|created|feature|new|wrote|write|support|introduc\w*)\b/i,
+    /\b(add|added|adds|implement|implemented|build|built|create|created|feature|new|wrote|write|support|introduc\w*)\b/gi,
   ],
 ];
 
@@ -129,8 +136,7 @@ export function primaryClause(summary: string): string {
 }
 
 function countMatches(text: string, re: RegExp): number {
-  const m = text.match(new RegExp(re.source, 'gi'));
-  return m ? m.length : 0;
+  return text.match(re)?.length ?? 0;
 }
 
 /** Evidence in the leading clause counts for far more than an incidental mention. */
