@@ -2,6 +2,24 @@
 
 Notable changes to the server. Versions track `package.json`.
 
+## 2.4.1
+
+Score each observation against one regex per kind, not a fresh one per clause.
+
+### Changed
+
+- `countMatches` used to build a new `RegExp` from `re.source` on every call, so
+  scoring a summary recompiled all seven kind patterns for each clause it
+  weighed. The `g` flag now lives on the pattern literals themselves and the
+  shared instance is matched directly.
+
+  Sharing a global regex would be a bug if these patterns were driven with
+  `exec` or `test`, where a leftover `lastIndex` makes the next call resume
+  mid-string. They are not: the only consumer is `String.prototype.match`, which
+  resets `lastIndex` to 0 before it runs, so no call can observe state left by
+  the last one. The classification is unchanged — still a case-insensitive
+  occurrence count — and the full suite passes.
+
 ## 2.4.0
 
 The buddy can tell you it died.
