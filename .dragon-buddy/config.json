@@ -10,6 +10,24 @@
     "deploy_target": "Local stdio subprocess launched by an MCP client. Packaged for npm (bin: buddy-mcp, buddy-import; files: dist) but not yet published.",
     "data_store": "SQLite at $BUDDY_HOME, defaulting to ~/.buddy-mcp. Deliberately not ~/.buddy, which belongs to @fiorastudio/buddy."
   },
+  "related_repos": {
+    "_comment": "Repos this one is meaningfully entangled with. Declared, never inferred from disk adjacency -- ~/projects/DragonSecurity has 85 sibling directories and proximity means nothing. `path` is relative to this repo root and is the only field anything could ever resolve; its absence means the repo is not checked out on this machine. `url` is identity only, an opaque string (these remotes are scp-style and have no URL scheme). Read by the skills pack for context; the MCP server itself does not read this file.",
+    "repos": [
+      {
+        "name": "dragon-dev-buddy",
+        "path": "../dragon-dev-buddy",
+        "url": "git@github.com:DragonSecurity/dragon-dev-buddy.git",
+        "relation": "consumer",
+        "what": "The skills pack and Claude Code plugin this server backs. Ships the MCP server config that spawns buddy-mcp, the skills that read this config.json, and the pre/post hooks that enforce the buddy_advise / buddy_observe calls. Go, plus skills/ and hooks/. A change to this server tool surface lands there, not here."
+      },
+      {
+        "name": "fiorastudio/buddy",
+        "url": "https://github.com/fiorastudio/buddy",
+        "relation": "distinct-project",
+        "what": "NOT upstream and NOT a fork parent -- buddy-mcp shares no code with it and was written from scratch. Related only because the two collide in namespace: it owns ~/.buddy, which is why this server stores at ~/.buddy-mcp. PR #158 there is separate work of the author's. Easily conflated with this repo; treat any claim that buddy-mcp derives from it as wrong."
+      }
+    ]
+  },
   "security": {
     "exposure": "public",
     "_exposure_note": "Public source repository, not yet published to npm. As of 2026-08-02 the process IS network-capable: `buddy-mcp serve` (src/serve.ts) binds node:http and exposes GET /status and /healthz. It defaults to 127.0.0.1 and must be given --host 0.0.0.0 to leave the machine; the endpoint is read-only, unauthenticated, and opens the SQLite database with readOnly:true. There is still no fetch, no outbound egress, no node:net client and no child_process in src/. Two things to revisit: (1) the moment a write route is added (a `pet` action is planned for a hardware display), unauthenticated LAN access stops being a presence leak and becomes a control surface, so it needs a shared secret compared with timingSafeEqual; (2) an npm release, at which point every installer runs this against their own transcripts.",
