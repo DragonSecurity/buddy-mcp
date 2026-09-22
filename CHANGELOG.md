@@ -2,6 +2,31 @@
 
 Notable changes to the server. Versions track `package.json`.
 
+## 2.5.0
+
+`buddy_skills` takes stock of the skills that are not earning their place.
+
+### Added
+
+- **A stocktake in `buddy_skills`.** Every skill discovered more than 30 days ago
+  and unused within them gets one of three verdicts, grounded in the observations
+  the buddy has actually recorded rather than in a read of the skill's prose:
+  *missed* (the best fit for work you did, never loaded — look at its
+  description), *quiet* (used once, not lately, with how often it was the best
+  fit since) and *idle* (the best fit for nothing — uninstall or rewrite). They
+  replace the flat "Never used" line for the skills they cover.
+
+  The matching is deliberately stricter than the one nudges use. Descriptions
+  share a couple of words with almost any summary: measured on one buddy's 757
+  observations, a network fleet-audit skill cleared the nudge threshold on 172
+  summaries of ordinary coding work. Counting only observations a skill is the
+  unique best fit for, at a score of four, took that to 18. A skill discovered
+  inside the window is left out, and so is the whole report when the window holds
+  no observations — "nothing you did fits" is only a claim when you did something.
+
+- **A test that no tracked file carries an absolute home path.** The pack has
+  had one since its first release; this repository is public too and had none.
+
 ## 2.4.1
 
 Score each observation against one regex per kind, not a fresh one per clause.
