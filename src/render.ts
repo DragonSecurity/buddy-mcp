@@ -12,7 +12,7 @@ import { PERSONALITIES } from './personality.js';
 import type { CrashSummary } from './crash.js';
 import type { Compliance } from './gate.js';
 import type { Presence } from './presence.js';
-import type { Advice, SkillAffinity, Suggestion, SkillStat } from './skills.js';
+import type { Advice, SkillAffinity, Stocktake, Suggestion, SkillStat } from './skills.js';
 import type { BuddyState, MoodTier } from './types.js';
 
 export const MOOD_EMOJI: Record<MoodTier, string> = {
@@ -195,11 +195,43 @@ const MAX_NAME_COLUMN = 40;
 /** How many not-installed plugins to name before summarising the rest. */
 const MAX_UNINSTALLED_LISTED = 10;
 
+/** How many skills to name per stocktake verdict before summarising the rest. */
+const MAX_STALE_LISTED = 8;
+
+/**
+ * The skills not earning their place, grouped by what to do about each. Empty
+ * when there is nothing to report, so the caller can drop the section whole.
+ */
+export function renderStocktake(take: Stocktake | null, now: Date): string {
+  if (!take || take.stale.length === 0) return '';
+
+  const daysAgo = (at: number | null) =>
+    at === null ? 'never' : `${Math.max(1, Math.round((now.getTime() - at) / 86_400_000))}d ago`;
+  const group = (verdict: string, head: string, item: (s: Stocktake['stale'][number]) => string) => {
+    const hits = take.stale.filter((s) => s.verdict === verdict);
+    if (hits.length === 0) return [];
+    const shown = hits.slice(0, MAX_STALE_LISTED).map(item);
+    const rest = hits.length - shown.length;
+    return [`  ${head} (${hits.length}): ${shown.join(', ')}${rest > 0 ? `, and ${rest} more` : ''}`];
+  };
+
+  return [
+    `**Stocktake** — last ${take.window} days, ${take.observations} observations`,
+    ...group('missed', 'Fit your work, never loaded — check the description', (s) => `${s.skill} (${s.matched}×)`),
+    ...group('quiet', 'Gone quiet', (s) =>
+      `${s.skill} (last ${daysAgo(s.lastUsedAt)}${s.matched > 0 ? `, best fit ${s.matched}× in ${take.window}d` : ''})`,
+    ),
+    ...group('idle', 'Nothing you did fits — uninstall or rewrite?', (s) => s.skill),
+  ].join('\n');
+}
+
 export function renderSkills(
   stats: SkillStat[],
   byKind: Record<string, SkillAffinity[]> = {},
   uninstalled: string[] = [],
   manifestReadable = true,
+  take: Stocktake | null = null,
+  now: Date = new Date(),
 ): string {
   if (stats.length === 0) {
     return 'No skills discovered yet. Install a plugin or add `.claude/skills/` to this project.';
@@ -219,9 +251,15 @@ export function renderSkills(
   const affinity = renderAffinity(byKind);
   if (affinity) out.push('', affinity);
 
-  if (unused.length) {
-    out.push('', `Never used (${unused.length}): ${unused.map((s) => s.name).join(', ')}`);
+  // A skill the stocktake already has a verdict on is named there, with its
+  // evidence; listing it again here would only say the same thing with less.
+  const judged = new Set(take?.stale.map((s) => s.skill) ?? []);
+  const unjudged = unused.filter((s) => !judged.has(s.name));
+  if (unjudged.length) {
+    out.push('', `Never used (${unjudged.length}): ${unjudged.map((s) => s.name).join(', ')}`);
   }
+  const stock = renderStocktake(take, now);
+  if (stock) out.push('', stock);
   if (uninstalled.length) {
     const shown = uninstalled.slice(0, MAX_UNINSTALLED_LISTED);
     const rest = uninstalled.length - shown.length;

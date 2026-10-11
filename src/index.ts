@@ -14,6 +14,7 @@ import {
   pluginManifestReadable,
   recordSkillUses,
   skillStats,
+  stocktake,
   suggestSkill,
   syncSkills,
   uninstalledPlugins,
@@ -212,8 +213,9 @@ server.registerTool(
     title: "See what your buddy knows",
     description:
       'List the skills the buddy has discovered across installed plugins, your personal ' +
-      'skills directory and the current project, with how often each has been used and ' +
-      'which ones you reach for by task kind.',
+      'skills directory and the current project, with how often each has been used, ' +
+      'which ones you reach for by task kind, and a stocktake of the ones not earning ' +
+      'their place: gone quiet, fitting your work but never loaded, or fitting nothing you do.',
     inputSchema: {},
     // Refreshes the discovery registry, so not strictly read-only.
     annotations: { readOnlyHint: false, idempotentHint: true, openWorldHint: false },
@@ -226,14 +228,16 @@ server.registerTool(
     let stranded: string[] = [];
     // Assume readable on error: a warning we cannot substantiate is noise.
     let manifestOk = true;
+    let take = null;
     try {
       byKind = affinityByKind();
       stranded = uninstalledPlugins();
       manifestOk = pluginManifestReadable();
+      take = stocktake(now);
     } catch {
-      /* all three are niceties; never break the listing */
+      /* all four are niceties; never break the listing */
     }
-    return text(renderSkills(stats, byKind, stranded, manifestOk));
+    return text(renderSkills(stats, byKind, stranded, manifestOk, take, now));
   },
 );
 
