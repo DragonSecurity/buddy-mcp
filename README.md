@@ -154,7 +154,7 @@ point both at the one you actually keep.
 | `buddy_status` | — | Status card. Hatches a buddy on first use. |
 | `buddy_advise` | `task`, optional `kind`, optional `limit` | Ranks the skills worth loading **before** you start. |
 | `buddy_observe` | `summary`, optional `kind`, optional `skills_used` | Records a task, grants XP, reacts, and may suggest a skill. |
-| `buddy_skills` | — | Lists discovered skills, usage, and what you reach for per task kind. |
+| `buddy_skills` | — | Lists discovered skills, usage, what you reach for per task kind, and a stocktake of the skills not earning their place. |
 | `buddy_rename` | `name` | Renames the buddy. Progress and personality untouched. |
 
 Add this to `~/.claude/CLAUDE.md` so Claude uses it:
@@ -254,6 +254,22 @@ What you reach for
   deploy    cloudflare:wrangler 100%
   feature   dataviz 100%
 ```
+
+and a stocktake of the rest, from the last 30 days of observations:
+
+```
+**Stocktake** — last 30 days, 757 observations
+  Fit your work, never loaded — check the description (1): fleet-drift-audit (18×)
+  Gone quiet (2): secrets-and-config-audit (last 33d ago, best fit 38× in 30d), pentest-report (last 52d ago)
+  Nothing you did fits — uninstall or rewrite? (1): dataviz
+```
+
+A skill counts toward "fit" only for observations it is the single best match
+for, at a score a stray shared word cannot reach, and a skill discovered inside
+the window is left out — it has had no chance to be used. The verdicts are
+prompts to look, not conclusions: a skill whose vocabulary overlaps your work
+without fitting it will read as missed, and a routing eval (the
+dragon-dev-buddy pack ships one) is how you find out which.
 
 ## Mechanics
 

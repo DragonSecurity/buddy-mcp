@@ -258,6 +258,7 @@ interface SkillRow {
   description: string;
   uses: number;
   last_used_at: number | null;
+  first_seen: number;
 }
 
 /**
@@ -267,7 +268,7 @@ interface SkillRow {
 function visibleRows(cwd: string): SkillRow[] {
   return getDb()
     .prepare(
-      `SELECT name, project_root, source, description, uses, last_used_at
+      `SELECT name, project_root, source, description, uses, last_used_at, first_seen
          FROM skills
         WHERE available = 1
           AND (project_root = '' OR project_root = ?)
@@ -365,6 +366,108 @@ export function affinityByKind(cwd: string = currentProject()): Record<string, S
     if (ranked.length > 0) out[k.kind] = ranked;
   }
   return out;
+}
+
+/**
+ * A skill that looks like it is not earning its place, and the evidence for it.
+ *
+ * `quiet` was used once and has not been since. `missed` was the best fit for
+ * work you did in the window and was never loaded for any of it: the skill may be
+ * fine but its description is not what gets it picked. `idle` was the best fit
+ * for none of it, so nothing you do calls for it, which makes it a candidate to
+ * uninstall or rewrite.
+ */
+export interface StaleSkill {
+  skill: string;
+  verdict: 'quiet' | 'missed' | 'idle';
+  uses: number;
+  lastUsedAt: number | null;
+  /** Observations in the window this skill was the single best fit for. */
+  matched: number;
+}
+
+export interface Stocktake {
+  /** Size of the window in days. */
+  window: number;
+  /** Observations inside the window — the evidence `matched` is counted from. */
+  observations: number;
+  stale: StaleSkill[];
+}
+
+/**
+ * A stocktake match has to clear a higher bar than a nudge. Even clamped to
+ * MAX_SKILL_DESCRIPTION, a description is dense with the words work summaries use,
+ * so almost any summary shares two of them with most skills:
+ * measured on one buddy's 757 observations, a fleet-audit skill cleared MIN_SCORE
+ * on 172 summaries of ordinary coding work, about as often as the review skill
+ * used on 86 of them. Requiring the skill to be the unique best fit, at a score
+ * of a name hit plus a description hit or four description hits, took that to 18
+ * -- all of them summaries that genuinely were about fleets.
+ */
+const STOCKTAKE_MIN_SCORE = 4;
+
+/** The one skill a summary fits best, or null when none clears the bar or two tie. */
+function bestFit(rows: SkillRow[], summary: string): string | null {
+  let best: string | null = null;
+  let top = 0;
+  let tied = false;
+  for (const r of rows) {
+    const score = scoreSkill({ name: r.name, description: r.description }, summary);
+    if (score > top) {
+      best = r.name;
+      top = score;
+      tied = false;
+    } else if (score === top) {
+      tied = true;
+    }
+  }
+  return top >= STOCKTAKE_MIN_SCORE && !tied ? best : null;
+}
+
+/**
+ * Which skills are not being used, and why that might be, grounded in what the
+ * buddy has actually watched you do rather than in a read of the skill's prose.
+ *
+ * A skill discovered inside the window is left out. Having had no chance to be
+ * used is not evidence of anything, and every freshly installed plugin would
+ * otherwise arrive pre-labelled as neglected. Likewise the whole report is empty
+ * when the window holds no observations: `idle` means "nothing you did fits",
+ * which is only a claim when you did something.
+ */
+export function stocktake(now: Date, window = 30, cwd: string = currentProject()): Stocktake {
+  const cutoff = now.getTime() - window * 86_400_000;
+  const summaries = (
+    getDb().prepare('SELECT summary FROM events WHERE at >= ?').all(cutoff) as { summary: string }[]
+  ).map((e) => e.summary);
+
+  const stale: StaleSkill[] = [];
+  if (summaries.length === 0) return { window, observations: 0, stale };
+
+  const rows = visibleRows(cwd);
+  const matched = new Map<string, number>();
+  for (const summary of summaries) {
+    const fit = bestFit(rows, summary);
+    if (fit) matched.set(fit, (matched.get(fit) ?? 0) + 1);
+  }
+
+  for (const r of rows) {
+    if (Number(r.first_seen) >= cutoff) continue;
+    const uses = Number(r.uses);
+    const lastUsedAt = r.last_used_at === null ? null : Number(r.last_used_at);
+    if (lastUsedAt !== null && lastUsedAt >= cutoff) continue;
+
+    const n = matched.get(r.name) ?? 0;
+    const verdict = uses > 0 ? 'quiet' : n > 0 ? 'missed' : 'idle';
+    stale.push({ skill: r.name, verdict, uses, lastUsedAt, matched: n });
+  }
+
+  // Most actionable first: a skill that fits work you keep doing is a routing
+  // problem worth fixing today, a quiet one is worth a look, an idle one waits.
+  const order = { missed: 0, quiet: 1, idle: 2 } as const;
+  stale.sort(
+    (a, b) => order[a.verdict] - order[b.verdict] || b.matched - a.matched || a.skill.localeCompare(b.skill),
+  );
+  return { window, observations: summaries.length, stale };
 }
 
 export interface Advice {
